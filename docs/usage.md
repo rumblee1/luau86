@@ -1,6 +1,6 @@
 # Usage
 
-For your first boot, follow the [quick start](../README.md#quick-start). This guide covers choosing an image, adding files, and dealing with boot problems.
+Start with the [quick start](../README.md#quick-start), then use this guide to choose an image, add files, or troubleshoot a boot.
 
 ## Choose a disk image
 
@@ -27,7 +27,7 @@ The importer writes its output to `src/media/`. Use `--output` to write elsewher
 
 ### What happens when you restart?
 
-**Restart** keeps changes made to the emulated disks while you stay on that profile in the current Play session. Starting a fresh Play session or powering on another profile loads a fresh copy from the imported image.
+**Restart** keeps changes made to the emulated disks while you stay on the same profile in the current Play session. Start a fresh Play session or switch profiles to load a fresh copy from the imported image.
 
 ## Add files to a disk
 
@@ -63,7 +63,7 @@ Start with a compatible raw hard disk image that already has DOS and Windows 3.1
 python3 tools/media.py import-disk ./images/windows31.img --name "Windows 3.1"
 ```
 
-After Rojo sync, start a new Play session and power on **Windows 3.1**. The disk follows its existing startup settings. If it starts at a DOS prompt, type `WIN /S` to start Windows in Standard Mode.
+Start a new Play session and power on **Windows 3.1**. The disk follows its existing startup settings. If it starts at a DOS prompt, type `WIN /S` to start Windows in Standard Mode.
 
 The Windows profile presents a Microsoft serial mouse on COM1 (03F8h, IRQ4). Move or click over the guest display. Apps can use a serial driver such as CuteMouse with `CTMOUSE /S1`. [CuteMouse manual](https://github.com/FDOS/mouse/blob/master/ctmouse.txt)
 
@@ -73,8 +73,8 @@ To configure waveform audio, open **Control Panel → Drivers → Add**, choose 
 
 | What you see | What to check |
 | --- | --- |
-| The profile is missing in Studio | Check that the import succeeded and wrote to `src/media/`. Connect the Rojo plugin, let it sync, and start a new Play session. With only one available profile, Studio shows its name above **Power on**. |
-| Studio says the firmware is missing | Run `import-firmware` with both QEMU 10.1.0 ROM files and the font from the quick start, then sync again. |
+| The profile is missing in Studio | Check that the import succeeded and wrote to `src/media/`, then start a fresh Play session. With only one available profile, Studio shows its name above **Power on**. |
+| Studio says the firmware is missing | Run `import-firmware` with both QEMU 10.1.0 ROM files and the font from the quick start, then start a fresh Play session. |
 | The image size is rejected | Run `inspect` and compare the image to the [supported sizes](#choose-a-disk-image). If your image is inside a ZIP archive, extract it first. Use `import-floppy` for a 360 KiB boot floppy. |
 | SeaBIOS starts but DOS never appears | Check that the image has a working boot sector and a bootable OS. If you attached a second disk, try importing the boot disk by itself to narrow down the problem. |
 | A destination file already exists | Pick another destination folder or change the filename in `./my-files`. The import stops on a collision. |
@@ -122,11 +122,9 @@ From `C:\DOOM`, run `DOOM -NOMUSIC -NOMOUSE -WARP 1 1` to launch with your regul
 
 The PC speaker works through PIT channel 2 and port 61h. The 386 profiles also provide Sound Blaster 2.0-compatible 8-bit mono playback at port 220h, IRQ 5, DMA 1. The VGA disk sets `BLASTER=A220 I5 D1 T3` and gives a fresh Doom install these settings for digital sound effects. For an existing Doom configuration, set the sound effects device to **Sound Blaster**, with those port, IRQ, and DMA values. Use `-NOMUSIC` for Doom's digital effects. [Creative Sound Blaster hardware guide](https://pdos.csail.mit.edu/6.1810/2017/readings/hardware/SoundBlaster.pdf)
 
-In a Rojo-synced **Studio** Play session, run `BEEP` from the **FreeDOS** prompt for a short tone. In the Client explorer, `PlayerGui.LuauXT` shows `AudioStatus`. `Studio PCM` means Roblox is consuming PCM samples. `PC speaker only` uses a built-in Roblox tone to approximate the PC speaker, and `AudioDetail` shows why the PCM path is unavailable. Set `AudioVolume` between 0 and 1 to adjust or mute either path. `AudioUnderruns` counts times the guest sample queue emptied and had to refill during PCM playback. `AudioWriterUnderruns` counts times the Roblox output buffer was found empty during playback. The player adjusts its output reserve to cushion uneven Roblox frames and measures guest speed against elapsed time so tempo can adjust while preserving pitch.
+In a Studio Play session, run `BEEP` from the **FreeDOS** prompt for a short tone. In the Client explorer, `PlayerGui.LuauXT` shows `AudioStatus`. `Studio PCM` means Roblox is consuming PCM samples. `PC speaker only` uses a built-in Roblox tone to approximate the PC speaker, and `AudioDetail` shows why the PCM path is unavailable. Set `AudioVolume` between 0 and 1 to adjust or mute either path. `AudioUnderruns` counts times the guest sample queue emptied and had to refill during PCM playback. `AudioWriterUnderruns` counts times the Roblox output buffer was found empty during playback. The player adjusts its output reserve to cushion uneven Roblox frames and measures guest speed against elapsed time so tempo can adjust while preserving pitch.
 
 Bad Apple and Doom's digital sounds require `AudioStreamWriter`. Roblox restricts it to Studio outside Team Create, and its availability depends on the Studio build and feature rollout. [Roblox audio output reference](https://create.roblox.com/docs/reference/engine/classes/AudioStreamWriter) · [Roblox engine team rollout notes](https://devforum.roblox.com/t/release-notes-for-747/4985911?page=3)
-
-Run `luau --codegen tests/audio.luau` to check the speaker, DMA playback, and Sound Blaster interrupts.
 
 ## Hardware and boot profiles
 
@@ -140,21 +138,3 @@ Run `luau --codegen tests/audio.luau` to check the speaker, DMA playback, and So
 | Input and sound | PC keyboard, Microsoft serial mouse on COM1, PC speaker, and Sound Blaster-compatible audio |
 
 Luau XT uses the original SeaBIOS and SeaVGABIOS binaries from QEMU 10.1.0. The media builder checks both SHA-256 digests. The emulator provides Intel 440FX shadow memory, QEMU's firmware configuration ports, and IDE. The client scheduler paces guest time against the 1.193 MHz PIT. [SeaBIOS source](https://qemu.googlesource.com/seabios/+/refs/tags/rel-1.17.0) · [QEMU firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html)
-
-## Verify from the command line
-
-```sh
-python3 tests/media_import.py
-luau --codegen tests/ide-drives.luau
-luau --codegen tests/smoke.luau
-```
-
-The importer tests use `mtools` and temporary images. The Luau tests above use synthetic disks or run without media.
-
-```sh
-luau --codegen tests/seabios.luau -a dos
-luau --codegen tests/seabios.luau -a grub
-luau --codegen tests/seabios.luau -a reboot
-```
-
-These SeaBIOS cases use the existing `vga_disk`, `grub_disk`, and `full_disk` fixtures, respectively, plus the legacy firmware and font modules under `src/media/`. The older 8088 and GLaBIOS tests also require their original generated fixtures.
