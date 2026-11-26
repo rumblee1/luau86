@@ -126,8 +126,6 @@ In a Studio Play session, run `BEEP` from the **FreeDOS** prompt for a short ton
 
 Bad Apple and Doom's digital sounds require `AudioStreamWriter`. Roblox restricts it to Studio outside Team Create, and its availability depends on the Studio build and feature rollout. [Roblox audio output reference](https://create.roblox.com/docs/reference/engine/classes/AudioStreamWriter) · [Roblox engine team rollout notes](https://devforum.roblox.com/t/release-notes-for-747/4985911?page=3)
 
-Run `luau --codegen tests/audio.luau` to check the speaker, DMA playback, and Sound Blaster interrupts.
-
 ## Hardware and boot profiles
 
 | Component | Luau XT |
@@ -140,21 +138,3 @@ Run `luau --codegen tests/audio.luau` to check the speaker, DMA playback, and So
 | Input and sound | PC keyboard, Microsoft serial mouse on COM1, PC speaker, and Sound Blaster-compatible audio |
 
 Luau XT uses the original SeaBIOS and SeaVGABIOS binaries from QEMU 10.1.0. The media builder checks both SHA-256 digests. The emulator provides Intel 440FX shadow memory, QEMU's firmware configuration ports, and IDE. The client scheduler paces guest time against the 1.193 MHz PIT. [SeaBIOS source](https://qemu.googlesource.com/seabios/+/refs/tags/rel-1.17.0) · [QEMU firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html)
-
-## Verify from the command line
-
-```sh
-python3 tests/media_import.py
-luau --codegen tests/ide-drives.luau
-luau --codegen tests/smoke.luau
-```
-
-The importer tests use `mtools` and temporary images. The Luau tests above use synthetic disks or run without media.
-
-```sh
-luau --codegen tests/seabios.luau -a dos
-luau --codegen tests/seabios.luau -a grub
-luau --codegen tests/seabios.luau -a reboot
-```
-
-These SeaBIOS cases use the existing `vga_disk`, `grub_disk`, and `full_disk` fixtures, respectively, plus the legacy firmware and font modules under `src/media/`. The older 8088 and GLaBIOS tests also require their original generated fixtures.

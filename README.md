@@ -40,14 +40,6 @@ Sync the project to Studio and start a Play session. Select **My DOS PC** if the
 - [Boot a preinstalled Windows 3.1 image](docs/usage.md#boot-windows-31)
 - [Fix a boot problem](docs/usage.md#troubleshoot)
 
-## Tests
-
-The smoke test uses the Luau CLI and runs without boot media.
-
-```sh
-luau --codegen tests/smoke.luau
-```
-
 ## Media and license
 
 Imported firmware and disks live in the Git-ignored `src/media/` folder. Studio builds can include these files, so use a clean checkout before sharing a build that should not contain local media.
