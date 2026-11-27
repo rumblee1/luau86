@@ -1,18 +1,18 @@
 {
-  "name": "Luau XT Emulator",
+  "name": "Luau86 Emulator",
   "emitLegacyScripts": false,
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
-      "luau_xt": {
+      "luau86": {
         "$path": "src"
       }
     }
   },
   "globIgnorePaths": [
-    "**/.luau-xt-*",
-    "**/.luau-xt-*/**",
+    "**/.luau86-*",
+    "**/.luau86-*/**",
     "src/media/AtBios.luau",
     "src/media/Bios.luau",
     "src/media/BootTest.luau",

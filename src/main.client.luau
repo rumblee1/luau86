@@ -15,7 +15,7 @@ local scanCodes = require(modules:WaitForChild("Keyboard"))
 local AudioOutput = require(modules:WaitForChild("AudioOutput"))
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "LuauXT"
+gui.Name = "Luau86"
 gui.ResetOnSpawn = false
 gui:SetAttribute("AudioVolume", 0.65)
 
@@ -307,7 +307,7 @@ local cameraConnection = workspace:GetPropertyChangedSignal("CurrentCamera"):Con
 	end
 end)
 
-local ACTION = "LuauXTKeyboard"
+local ACTION = "Luau86Keyboard"
 local keys = {}
 for _, key in Enum.KeyCode:GetEnumItems() do
 	if scanCodes[key.Name] then
@@ -482,7 +482,7 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 	local pit = machine.board.pit
 	local startingClocks = pit.now
 	local startedAt = os.clock()
-	debug.profilebegin("Luau XT CPU")
+	debug.profilebegin("Luau86 CPU")
 	local ran, resetOrError = pcall(runSlice, pit, startingClocks + credit, startedAt + budget)
 	debug.profileend()
 	local devicesStartedAt = os.clock()
@@ -508,14 +508,14 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 	end
 
 	if audioOutput then
-		debug.profilebegin("Luau XT Audio")
+		debug.profilebegin("Luau86 Audio")
 		local ok, reason = pcall(audioOutput.submit, audioOutput)
 		debug.profileend()
 		if not ok then
 			stopAudio()
 			gui:SetAttribute("AudioStatus", "Audio unavailable")
 			gui:SetAttribute("AudioDetail", tostring(reason))
-			warn("Luau XT audio output stopped.", reason)
+			warn("Luau86 audio output stopped.", reason)
 		end
 	end
 
@@ -536,16 +536,16 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 		end
 		if graphicsImage then
 			showImage(graphicsImage)
-			debug.profilebegin("Luau XT VGA")
+			debug.profilebegin("Luau86 VGA")
 			local convertStartedAt = if performance then os.clock() else nil
-			debug.profilebegin("Luau XT VGA Convert")
+			debug.profilebegin("Luau86 VGA Convert")
 			local _, rectangles = vga:render()
 			debug.profileend()
 			if rectangles and #rectangles > 0 then
 				presented = true
 				local uploadStartedAt = if performance then os.clock() else nil
 				local uploadBytes = 0
-				debug.profilebegin("Luau XT VGA Upload")
+				debug.profilebegin("Luau86 VGA Upload")
 				for index = 1, #rectangles, 4 do
 					local x, y = rectangles[index], rectangles[index + 1]
 					local width, height = rectangles[index + 2] - x, rectangles[index + 3] - y

@@ -73,7 +73,7 @@ end
 
 function AudioOutput.new(gui, board)
 	local folder = Instance.new("Folder")
-	folder.Name = "LuauXTGuestAudio"
+	folder.Name = "Luau86GuestAudio"
 	folder.Parent = SoundService
 	local self = setmetatable({ gui = gui, board = board, folder = folder }, AudioOutput)
 

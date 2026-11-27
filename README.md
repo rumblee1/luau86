@@ -1,6 +1,6 @@
-# Luau XT
+# Luau86
 
-Luau XT runs a 386 PC inside Roblox Studio. Bring your own bootable floppy or hard disk image and use it to run DOS, Windows 3.1, or other software that fits the emulated hardware.
+Luau86 runs a 386 PC inside Roblox Studio. Bring your own bootable floppy or hard disk image and use it to run DOS, Windows 3.1, or other software that fits the emulated hardware.
 
 ## Quick start
 

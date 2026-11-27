@@ -1,4 +1,4 @@
-"""Import your own firmware and boot disk images into Luau XT."""
+"""Import your own firmware and boot disk images into Luau86."""
 
 import argparse
 from contextlib import contextmanager
@@ -23,7 +23,7 @@ def stage_import(output, destination):
     if destination.exists() or destination.is_symlink():
         raise ValueError(f"{destination} already exists. Choose a different name or output folder")
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".luau-xt-", dir=output) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".luau86-", dir=output) as temporary:
         staged = Path(temporary) / "import"
         yield staged
         destination.parent.mkdir(parents=True, exist_ok=True)

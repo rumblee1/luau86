@@ -1,6 +1,6 @@
 # Third-party notices
 
-The MIT license covers Luau XT's own source code and documentation. Third-party firmware, fonts, and guest software retain their upstream terms.
+The MIT license covers Luau86's own source code and documentation. Third-party firmware, fonts, and guest software retain their upstream terms.
 
 | Component | Version and upstream terms |
 | --- | --- |

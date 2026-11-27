@@ -8,4 +8,4 @@
 	int 0x21
 	mov ax, 0x4c00
 	int 0x21
-message: .ascii "Hello from Luau XT!\r\n$"
+message: .ascii "Hello from Luau86!\r\n$"

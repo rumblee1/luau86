@@ -14,7 +14,7 @@ local function identifyDisk(cylinders)
 	buffer.writeu16(identify, 1 * 2, cylinders)
 	buffer.writeu16(identify, 3 * 2, HEADS)
 	buffer.writeu16(identify, 6 * 2, SECTORS)
-	for index, byte in { string.byte(string.format("%-40s", "Luau XT ATA disk"), 1, 40) } do
+	for index, byte in { string.byte(string.format("%-40s", "Luau86 ATA disk"), 1, 40) } do
 		buffer.writeu8(identify, 54 + bit32.bxor(index - 1, 1), byte)
 	end
 	buffer.writeu16(identify, 49 * 2, 0x0200) -- LBA
