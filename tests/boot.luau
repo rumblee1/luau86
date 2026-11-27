@@ -62,7 +62,7 @@ print("FreeDOS accepted I in DIR and listed the floppy")
 
 typeCommand("hello")
 local output = runUntil(machine, function(text)
-	return text:find("Hello from Luau XT!", 1, true) ~= nil and atPrompt(text)
+	return text:find("Hello from Luau86!", 1, true) ~= nil and atPrompt(text)
 end, 1500)
 assert(output:find("A:\\>hello", 1, true), "FreeCOM should echo the keyboard command")
 print("FreeDOS accepted HELLO through the XT keyboard and returned to A:\\>")
@@ -75,7 +75,7 @@ end, 1500)
 local function runCopiedProgram()
 	typeCommand("test")
 	runUntil(machine, function(text)
-		return text:match("A:\\>test *\nHello from Luau XT!") ~= nil and atPrompt(text)
+		return text:match("A:\\>test *\nHello from Luau86!") ~= nil and atPrompt(text)
 	end, 1500)
 end
 

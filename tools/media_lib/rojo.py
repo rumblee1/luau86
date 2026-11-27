@@ -1,4 +1,4 @@
-"""Write the on-disk Luau XT media format."""
+"""Write the on-disk Luau86 media format."""
 
 import base64
 

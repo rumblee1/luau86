@@ -6,7 +6,7 @@
 .text
 	jmp start
 	nop
-	.ascii "LUAUXT  "
+	.ascii "LUAU86  "
 	.org 62
 start:
 	cli

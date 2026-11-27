@@ -1,4 +1,4 @@
-# BIOS option ROM for the Luau XT disk adapter, at C800:0000.
+# BIOS option ROM for the Luau86 disk adapter, at C800:0000.
 # 340h–341h LBA, 342h–345h guest offset and segment, 346h sector count.
 # Writing 347h starts the command. Reading 347h returns its status.
 # Command 1 returns total sectors at 340h–341h and the last cylinder at 342h.

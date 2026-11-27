@@ -6,7 +6,7 @@ Start with the [quick start](../README.md#quick-start), then use this guide to c
 
 A raw disk image contains the disk's sectors in order. For a first boot, use an image you already know is bootable, such as a hard disk with DOS installed or a DOS boot floppy.
 
-| Image | What Luau XT accepts |
+| Image | What Luau86 accepts |
 | --- | --- |
 | Hard disk | A raw IDE image with 1–127 whole 256 KiB cylinders. For cylinder/head/sector (CHS) addressing, use 16 heads and 32 sectors per track. |
 | Floppy | A raw 360 KiB image. |
@@ -82,7 +82,7 @@ To configure waveform audio, open **Control Panel → Drivers → Add**, choose 
 
 ## FreeDOS apps, games, and media
 
-If you already have a Luau XT FreeDOS library disk or demo floppy, boot it to run the included apps.
+If you already have a Luau86 FreeDOS library disk or demo floppy, boot it to run the included apps.
 
 ```dos
 BMPVIEW SAMPLE.BMP
@@ -114,7 +114,7 @@ The player accepts 128×80 monochrome clips and doubles the pixels on both axes.
 
 ### Doom
 
-On disks with the Luau XT Doom launchers, run `DOOMFAST` for a smaller low-detail view with two digital sound channels, or `DOOMFAST -NOSOUND` to disable sound. `DOOMTINY -NOSOUND` uses a 96×48 viewport. On disks with FastDoom, run `FASTDOOM`. Arrow keys move and turn, Ctrl fires, and Space opens doors. Press F10 and then Y to quit.
+On disks with the Luau86 Doom launchers, run `DOOMFAST` for a smaller low-detail view with two digital sound channels, or `DOOMFAST -NOSOUND` to disable sound. `DOOMTINY -NOSOUND` uses a 96×48 viewport. On disks with FastDoom, run `FASTDOOM`. Arrow keys move and turn, Ctrl fires, and Space opens doors. Press F10 and then Y to quit.
 
 From `C:\DOOM`, run `DOOM -NOMUSIC -NOMOUSE -WARP 1 1` to launch with your regular Doom configuration. Startup can take time while the DOS extender initializes and the game reads the WAD.
 
@@ -122,13 +122,13 @@ From `C:\DOOM`, run `DOOM -NOMUSIC -NOMOUSE -WARP 1 1` to launch with your regul
 
 The PC speaker works through PIT channel 2 and port 61h. The 386 profiles also provide Sound Blaster 2.0-compatible 8-bit mono playback at port 220h, IRQ 5, DMA 1. The VGA disk sets `BLASTER=A220 I5 D1 T3` and gives a fresh Doom install these settings for digital sound effects. For an existing Doom configuration, set the sound effects device to **Sound Blaster**, with those port, IRQ, and DMA values. Use `-NOMUSIC` for Doom's digital effects. [Creative Sound Blaster hardware guide](https://pdos.csail.mit.edu/6.1810/2017/readings/hardware/SoundBlaster.pdf)
 
-In a Studio Play session, run `BEEP` from the **FreeDOS** prompt for a short tone. In the Client explorer, `PlayerGui.LuauXT` shows `AudioStatus`. `Studio PCM` means Roblox is consuming PCM samples. `PC speaker only` uses a built-in Roblox tone to approximate the PC speaker, and `AudioDetail` shows why the PCM path is unavailable. Set `AudioVolume` between 0 and 1 to adjust or mute either path. `AudioUnderruns` counts times the guest sample queue emptied and had to refill during PCM playback. `AudioWriterUnderruns` counts times the Roblox output buffer was found empty during playback. The player adjusts its output reserve to cushion uneven Roblox frames and measures guest speed against elapsed time so tempo can adjust while preserving pitch.
+In a Studio Play session, run `BEEP` from the **FreeDOS** prompt for a short tone. In the Client explorer, `PlayerGui.Luau86` shows `AudioStatus`. `Studio PCM` means Roblox is consuming PCM samples. `PC speaker only` uses a built-in Roblox tone to approximate the PC speaker, and `AudioDetail` shows why the PCM path is unavailable. Set `AudioVolume` between 0 and 1 to adjust or mute either path. `AudioUnderruns` counts times the guest sample queue emptied and had to refill during PCM playback. `AudioWriterUnderruns` counts times the Roblox output buffer was found empty during playback. The player adjusts its output reserve to cushion uneven Roblox frames and measures guest speed against elapsed time so tempo can adjust while preserving pitch.
 
 Bad Apple and Doom's digital sounds require `AudioStreamWriter`. Roblox restricts it to Studio outside Team Create, and its availability depends on the Studio build and feature rollout. [Roblox audio output reference](https://create.roblox.com/docs/reference/engine/classes/AudioStreamWriter) · [Roblox engine team rollout notes](https://devforum.roblox.com/t/release-notes-for-747/4985911?page=3)
 
 ## Hardware and boot profiles
 
-| Component | Luau XT |
+| Component | Luau86 |
 | --- | --- |
 | CPU | 386 core with the additional instructions used by the stock SeaBIOS build |
 | Memory | 640 KiB conventional RAM and 15 MiB extended RAM |
@@ -137,4 +137,4 @@ Bad Apple and Doom's digital sounds require `AudioStreamWriter`. Roblox restrict
 | Video | 80×25 text, 320×200 indexed graphics, and 640×480 planar graphics |
 | Input and sound | PC keyboard, Microsoft serial mouse on COM1, PC speaker, and Sound Blaster-compatible audio |
 
-Luau XT uses the original SeaBIOS and SeaVGABIOS binaries from QEMU 10.1.0. The media builder checks both SHA-256 digests. The emulator provides Intel 440FX shadow memory, QEMU's firmware configuration ports, and IDE. The client scheduler paces guest time against the 1.193 MHz PIT. [SeaBIOS source](https://qemu.googlesource.com/seabios/+/refs/tags/rel-1.17.0) · [QEMU firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html)
+Luau86 uses the original SeaBIOS and SeaVGABIOS binaries from QEMU 10.1.0. The media builder checks both SHA-256 digests. The emulator provides Intel 440FX shadow memory, QEMU's firmware configuration ports, and IDE. The client scheduler paces guest time against the 1.193 MHz PIT. [SeaBIOS source](https://qemu.googlesource.com/seabios/+/refs/tags/rel-1.17.0) · [QEMU firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html)
