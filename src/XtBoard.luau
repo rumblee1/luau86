@@ -106,16 +106,21 @@ function Board:disableAudio()
 	end
 end
 
+-- Refresh only affects DMA channel 0 registers. Synchronize before a
+-- guest can observe them or change the DMA or PIT configuration.
+function Board:syncDmaRefresh()
+	local periods = self.pit:takeRefresh()
+	if periods > 0 then
+		self.dma:refresh(periods)
+	end
+end
+
 function Board:advance(clocks)
 	local pit = self.pit
 	local now = pit.now + clocks
-	if now < pit.deadline then
-		pit.now = now
-	else
-		local refresh = pit:advance(clocks)
-		if refresh > 0 then
-			self.dma:refresh(refresh)
-		end
+	pit.now = now
+	if now >= pit.timer.next then
+		pit:raiseTimerIrq()
 	end
 	local soundBlaster = self.soundBlaster
 	if soundBlaster and now >= soundBlaster.nextAt then
@@ -303,6 +308,9 @@ function Board:read(port)
 	elseif self.soundBlaster and port >= SoundBlaster.BASE and port < SoundBlaster.BASE + 0x10 then
 		return self.soundBlaster:read(port)
 	elseif port <= 0x0F or (port >= 0x80 and port <= 0x87) then
+		if port <= 1 or port == 8 then
+			self:syncDmaRefresh()
+		end
 		return self.dma:read(port)
 	elseif port == 0x20 or port == 0x21 then
 		return self.pic:read(port)
@@ -381,10 +389,14 @@ function Board:write(port, value)
 	elseif self.soundBlaster and port >= SoundBlaster.BASE and port < SoundBlaster.BASE + 0x10 then
 		self.soundBlaster:write(port, value, self.pit.now)
 	elseif port <= 0x0F or (port >= 0x80 and port <= 0x87) then
+		self:syncDmaRefresh()
 		self.dma:write(port, value)
 	elseif port == 0x20 or port == 0x21 then
 		self.pic:write(port, value)
 	elseif port >= 0x40 and port <= 0x43 then
+		if port == 0x41 or (port == 0x43 and band(value, 0xC0) == 0x40) then
+			self:syncDmaRefresh()
+		end
 		if self.audio and (port == 0x42 or (port == 0x43 and band(value, 0xC0) == 0x80)) then
 			self.audio:sync(self.pit.now)
 		end

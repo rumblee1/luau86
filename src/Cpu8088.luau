@@ -611,7 +611,7 @@ function Cpu:step(repeatLimit)
 	elseif opcode >= 0x58 and opcode <= 0x5F then
 		self:setRegister(band(opcode, 7), operandSize, self:pop(operandSize))
 	elseif ADDITIONAL_386[opcode] and self.is386 then
-		self:additionalOpcode(opcode, operandSize, override, startIp, repeatPrefix)
+		return self:additionalOpcode(opcode, operandSize, override, startIp, repeatPrefix, repeatLimit)
 	elseif opcode >= 0x84 and opcode <= 0x87 then
 		local register, operand, segment = self:decodeOperand(override)
 		local left = self:readOperand(operand, segment, wide)

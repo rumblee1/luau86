@@ -63,7 +63,7 @@ function Machine:restart()
 	)
 end
 
-function Machine:step(haltLimit)
+local function step(self, haltLimit, execute)
 	local cpu, board = self.cpu, self.board
 	-- With neither PIC holding a request there is no interrupt to deliver.
 	local slave = board.slavePic
@@ -82,16 +82,61 @@ function Machine:step(haltLimit)
 	-- The 386 RAM fast path can also batch with interrupts enabled,
 	-- stopping at the next device event.
 	local repeatLimit = if flags == 0 or (flags == 0x200 and self.bus.at and not cpu.interruptShadow) then 64 else 1
-	local iterations = cpu:step(repeatLimit) or 1
-	local pc = self.bus.pc
-	if pc and pc.resetRequested then
-		local restarted = self:restart()
-		self.bus, self.board, self.cpu = restarted.bus, restarted.board, restarted.cpu
-		return true
+	local iterations = execute(cpu, repeatLimit) or 1
+	local bus = self.bus
+	local pc = bus.pc
+	if pc then
+		if pc.resetRequested then
+			local restarted = self:restart()
+			self.bus, self.board, self.cpu = restarted.bus, restarted.board, restarted.cpu
+			return true
+		end
+		if pc.awaitingDiskBoot and cpu.s[2].base + cpu.ip == 0x7C00 then
+			pc:diskBoot(cpu, bus.memory)
+		end
 	end
 	-- The PIT is driven by approximate guest time. HLT leaves the timers running.
 	local ticks = self.bus.at and 1 or 3
 	board:advance(cpu.halted and 32 or ticks * iterations)
+end
+
+function Machine:step(haltLimit)
+	return step(self, haltLimit, self.cpu.step)
+end
+
+local function runSlice(self, target, deadline, execute)
+	local pit = self.board.pit
+	while pit.now < target and os.clock() < deadline do
+		for _ = 1, 64 do
+			if pit.now >= target then
+				break
+			end
+			if step(self, target - pit.now, execute) then
+				return true
+			end
+		end
+	end
+end
+
+function Machine:runSlice(target, deadline)
+	local cpu, board = self.cpu, self.board
+	if not self.bus.at then
+		return runSlice(self, target, deadline, cpu.step)
+	end
+
+	while true do
+		local ok, result = pcall(runSlice, self, target, deadline, cpu.stepInSlice)
+		if ok then
+			return result
+		end
+		local code = cpu.faultCode
+		cpu.faultCode = nil
+		if not code then
+			error(result, 0)
+		end
+		cpu:finishFault(result, cpu.faultIp, code)
+		board:advance(if cpu.halted then 32 else 1)
+	end
 end
 
 return Machine

@@ -3,6 +3,7 @@ local DEFAULT_BUDGET = 0.004
 local MAX_BUDGET = 0.012
 local MAX_INDEXED_BUDGET = 0.016
 local MAX_FRAME_SAMPLE = 1 / 30
+local BUDGET_RECOVERY = 0.001
 
 local FrameBudget = {}
 FrameBudget.__index = FrameBudget
@@ -31,7 +32,9 @@ function FrameBudget:beginFrame(elapsed, adaptive, indexed)
 		local maximum = if indexed then MAX_INDEXED_BUDGET else MAX_BUDGET
 		local total = math.clamp(self.frameTime * share, DEFAULT_BUDGET, maximum)
 		local limit = math.max(MIN_BUDGET, total - self.deviceTime)
-		local growth = if self.saturated then 0.00025 else 0
+		-- Restore CPU headroom promptly when Windows starts drawing or a
+		-- program begins loading after an idle stretch.
+		local growth = if self.saturated then BUDGET_RECOVERY else 0
 		self.budget = math.min(limit, self.budget + growth)
 	else
 		self.budget = DEFAULT_BUDGET

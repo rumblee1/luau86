@@ -183,10 +183,51 @@ function Bus:writePhysical32(address, value)
 			buffer.writeu32(self.memory, mapped, value)
 			return
 		end
+		local vga = self.vga
+		if
+			vga
+			and vga.active
+			and mapped >= Vga.MEMORY_BASE
+			and mapped <= Vga.MEMORY_BASE + Vga.MEMORY_SIZE - 4
+			and vga:tryWriteChain4Dword(mapped - Vga.MEMORY_BASE, bit32.band(value, 0xFFFFFFFF))
+		then
+			return
+		end
 	end
 	for index = 0, 3 do
 		self:write8(address + index, bit32.extract(value, index * 8, 8))
 	end
+end
+
+function Bus:copyRamToVga(address, mapped, source, length)
+	local vga = self.vga
+	local last = mapped + length - 1
+	if
+		vga
+		and vga.active
+		and mapped >= Vga.MEMORY_BASE
+		and last < Vga.MEMORY_BASE + Vga.MEMORY_SIZE
+		and self:physical(address + length - 1) == last
+	then
+		return vga:tryCopyChain4(mapped - Vga.MEMORY_BASE, self.memory, source, length)
+	end
+	return false
+end
+
+function Bus:copyPlanarVga(target, source, count, backwards)
+	local vga = self.vga
+	if not vga or not vga.active then
+		return false
+	end
+	local first, last = Vga.MEMORY_BASE, Vga.MEMORY_BASE + Vga.MEMORY_SIZE - count
+	local dest, src = self:physical(target), self:physical(source)
+	return dest >= first
+		and dest <= last
+		and src >= first
+		and src <= last
+		and self:physical(target + count - 1) == dest + count - 1
+		and self:physical(source + count - 1) == src + count - 1
+		and vga:tryCopyPlanar(dest - first, src - first, count, backwards)
 end
 
 function Bus:transferDisk(disk, diskOffset, segment, offset, length, writeDisk)
@@ -256,6 +297,14 @@ function Bus:readIo(port, size)
 		value += self:readPort(bit32.band(port + index, 0xFFFF)) * 256 ^ index
 	end
 	return value
+end
+
+function Bus:readIdeBlock(port, target, count, size)
+	if not self.pc or port ~= AtaDisk.DATA_PORT or not self.io or not self.io.hardDisk then
+		return 0
+	end
+	local disk = self.io:selectedIdeDisk()
+	return if disk then disk:readBlock(self.memory, target, count, size) else 0
 end
 
 function Bus:writeIo(port, value, size)

@@ -32,17 +32,26 @@ function GuestAudio:sync(now)
 		self.count = last
 		return
 	end
-	for index = count, last - 1 do
-		local signal = if speaker then (if pit:out2(nextSample) then 0.16 else -0.16) else 0
-		-- A PC speaker cannot maintain a DC offset when its input is held high.
-		filtered = signal - previous + 0.995 * filtered
-		previous = signal
-		buffer.writef32(samples, index * 4, math.clamp(dac + filtered, -1, 1))
-		nextSample += interval
+	if not speaker and previous == 0 and filtered == 0 then
+		-- DMA holds a constant level between writes when the speaker is idle.
+		local sample = math.clamp(dac, -1, 1)
+		for offset = count * 4, last * 4 - 4, 4 do
+			buffer.writef32(samples, offset, sample)
+			nextSample += interval
+		end
+	else
+		for index = count, last - 1 do
+			local signal = if speaker then (if pit:out2(nextSample) then 0.16 else -0.16) else 0
+			-- A PC speaker cannot maintain a DC offset when its input is held high.
+			filtered = signal - previous + 0.995 * filtered
+			previous = signal
+			buffer.writef32(samples, index * 4, math.clamp(dac + filtered, -1, 1))
+			nextSample += interval
+		end
+		self.lastSpeaker, self.filteredSpeaker = previous, filtered
 	end
 	self.nextSample = nextSample + (endCount - last) * interval
 	self.count = last
-	self.lastSpeaker, self.filteredSpeaker = previous, filtered
 end
 
 function GuestAudio:setDac(value, now)

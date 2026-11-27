@@ -41,6 +41,7 @@ function AtaDisk.new(source, requestInterrupt)
 		registers = buffer.create(8),
 		requestInterrupt = requestInterrupt,
 		control = 0,
+		sectorsRead = 0,
 	}, AtaDisk)
 	disk:reset()
 	return disk
@@ -100,13 +101,18 @@ end
 
 function AtaDisk:advanceData(size)
 	self.cursor += size
-	if self.cursor == self.last then
+	local finished = self.cursor == self.last
+	local sectorBoundary = finished or self.cursor % SECTOR_SIZE == 0
+	if sectorBoundary and not self.writing and self.transfer == self.image then
+		self.sectorsRead += 1
+	end
+	if finished then
 		self.transfer = nil
 		self.status = READY
 		if self.writing then
 			self:signal()
 		end
-	elseif self.cursor % SECTOR_SIZE == 0 then
+	elseif sectorBoundary then
 		self:signal()
 	end
 end
@@ -122,6 +128,23 @@ function AtaDisk:readData(size)
 		else buffer.readu8(transfer, cursor)
 	self:advanceData(size)
 	return value
+end
+
+function AtaDisk:readBlock(memory, target, count, size)
+	local transfer, cursor = self.transfer, self.cursor
+	if not transfer or self.writing or cursor % size ~= 0 then
+		return 0
+	end
+	-- Complete at most one sector so its data-ready interrupt stays visible.
+	local remaining = math.min(self.last - cursor, SECTOR_SIZE - cursor % SECTOR_SIZE)
+	local iterations = math.min(count, math.floor(remaining / size))
+	if iterations < 2 then
+		return 0
+	end
+	local length = iterations * size
+	buffer.copy(memory, target, transfer, cursor, length)
+	self:advanceData(length)
+	return iterations
 end
 
 function AtaDisk:writeData(value, size)

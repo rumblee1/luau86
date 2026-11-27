@@ -1,6 +1,7 @@
 local band, extract = bit32.band, bit32.extract
 
 local RESET_CONTROL_PORT = 0xCF9
+local EQUIPMENT_FLAGS = 0x410
 
 local PcFirmware = { FW_CFG_SELECTOR = 0x510, PCI_CONFIG_ADDRESS = 0xCF8 }
 PcFirmware.__index = PcFirmware
@@ -39,6 +40,7 @@ function PcFirmware.new(vgaRom, hardDisk)
 		pciAddress = 0,
 		resetControl = 0,
 		resetRequested = false,
+		awaitingDiskBoot = true,
 		fwSelector = 0,
 		fwOffset = 0,
 		files = {
@@ -49,6 +51,18 @@ function PcFirmware.new(vgaRom, hardDisk)
 			[0x20] = vgaRom,
 		},
 	}, PcFirmware)
+end
+
+function PcFirmware:diskBoot(cpu, memory)
+	if cpu:protected() then
+		return
+	end
+	-- Stock SeaBIOS assumes the QEMU machine has a math coprocessor.
+	-- Correct its equipment word at disk boot so the guest can choose
+	-- its own software floating-point support.
+	local equipment = buffer.readu8(memory, EQUIPMENT_FLAGS)
+	buffer.writeu8(memory, EQUIPMENT_FLAGS, band(equipment, 0xFD))
+	self.awaitingDiskBoot = false
 end
 
 function PcFirmware:shadow(address)

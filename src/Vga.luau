@@ -107,6 +107,56 @@ local function markWrite(self, offset)
 	self.dirty = true
 end
 
+local function markRange(self, offset, length)
+	if not self.fullRedraw then
+		local first, last = rshift(offset, 7), rshift(offset + length - 1, 7)
+		buffer.fill(self.dirtyBlocks, first, 1, last - first + 1)
+	end
+	self.dirty = true
+end
+
+function Vga:tryCopyChain4(offset, source, start, length)
+	if not self.chain4 or not self.directWrite or self.planes ~= 15 then
+		return false
+	end
+	buffer.copy(self.memory, offset, source, start, length)
+	markRange(self, offset, length)
+	return true
+end
+
+-- In planar write mode 1 each destination receives all four source planes
+-- from the VGA latches. The last read must remain visible to later writes.
+function Vga:tryCopyPlanar(target, source, count, backwards)
+	if self.chain4 or self.writeMode ~= 1 or self.planes ~= 15 then
+		return false
+	end
+	local gap = if backwards then source - target else target - source
+	if gap > 0 and gap < count then
+		return false
+	end
+	local memory, length = self.memory, count * 4
+	self.latches = buffer.readu32(memory, (if backwards then source else source + count - 1) * 4)
+	if target ~= source then
+		buffer.copy(memory, target * 4, memory, source * 4, length)
+		markRange(self, target * 4, length)
+	end
+	return true
+end
+
+-- An aligned four-byte write in standard chain-4 mode targets one
+-- byte per plane and has no latch or raster-operation side effects.
+function Vga:tryWriteChain4Dword(offset, value)
+	if not self.chain4 or not self.directWrite or self.planes ~= 15 then
+		return false
+	end
+	local memory = self.memory
+	if buffer.readu32(memory, offset) ~= value then
+		buffer.writeu32(memory, offset, value)
+		markWrite(self, offset)
+	end
+	return true
+end
+
 function Vga:readMemory(offset)
 	local base = if self.chain4 then band(offset, 0xFFFC) else offset * 4
 	local latches = buffer.readu32(self.memory, base)
@@ -415,6 +465,32 @@ local function drawChangedPlanar(vga, address, screenRow, first, last)
 	return firstChange, lastChange
 end
 
+local function mergeNearestRows(rectangles, last)
+	-- Share the upload budget between separated updates, such as a mouse
+	-- cursor moving between two windows on opposite sides of the screen.
+	local best, leastExtra = 1, math.huge
+	for index = 1, last - 7, 4 do
+		local left, top, right, bottom =
+			rectangles[index], rectangles[index + 1], rectangles[index + 2], rectangles[index + 3]
+		local nextLeft, nextTop, nextRight, nextBottom =
+			rectangles[index + 4], rectangles[index + 5], rectangles[index + 6], rectangles[index + 7]
+		local mergedWidth = math.max(right, nextRight) - math.min(left, nextLeft)
+		local extra = mergedWidth * (nextBottom - top)
+			- (right - left) * (bottom - top)
+			- (nextRight - nextLeft) * (nextBottom - nextTop)
+		if extra < leastExtra then
+			best, leastExtra = index, extra
+		end
+	end
+	rectangles[best] = math.min(rectangles[best], rectangles[best + 4])
+	rectangles[best + 2] = math.max(rectangles[best + 2], rectangles[best + 6])
+	rectangles[best + 3] = rectangles[best + 7]
+	table.move(rectangles, best + 8, last, best + 4)
+	for index = last - 3, last do
+		rectangles[index] = nil
+	end
+end
+
 -- Rectangles store left, top, right, bottom, with exclusive right/bottom edges.
 local function addRow(rectangles, left, y, right)
 	local last = #rectangles
@@ -425,6 +501,9 @@ local function addRow(rectangles, left, y, right)
 	else
 		rectangles[last + 1], rectangles[last + 2] = left, y
 		rectangles[last + 3], rectangles[last + 4] = right, y + 1
+		if last == MAX_UPLOAD_RECTS * 4 then
+			mergeNearestRows(rectangles, last + 4)
+		end
 	end
 end
 
@@ -487,16 +566,6 @@ function Vga:render()
 	buffer.fill(self.dirtyBlocks, 0, 0)
 	self.dirty, self.fullRedraw = false, false
 
-	-- Bound the number of Roblox uploads for scattered updates.
-	if #rectangles > MAX_UPLOAD_RECTS * 4 then
-		local left, top, right, bottom = rectangles[1], rectangles[2], rectangles[3], rectangles[#rectangles]
-		for index = 5, #rectangles, 4 do
-			left = math.min(left, rectangles[index])
-			right = math.max(right, rectangles[index + 2])
-		end
-		table.clear(rectangles)
-		rectangles[1], rectangles[2], rectangles[3], rectangles[4] = left, top, right, bottom
-	end
 	return self.pixels, rectangles
 end
 

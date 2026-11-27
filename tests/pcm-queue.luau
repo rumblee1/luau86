@@ -100,3 +100,38 @@ for frame = 1, 360 do
 end
 assert(burst.underruns == 0 and burst.dropped == 0, "Uneven client refills must not deplete the guest reserve")
 print("PCM stayed continuous through repeated 64 ms and 45 ms refill gaps.")
+
+-- A guest that runs below the previous 35% tempo floor is still producing
+-- audio. Stretch that audio across the output instead of refilling in bursts.
+local heavilyLoaded = PcmQueue.new(inputRate, outputRate)
+local output = buffer.create(800 * 4)
+for _ = 1, 120 do
+	heavilyLoaded:push(tone(400), 400, 1 / 60)
+	heavilyLoaded:render(output, 800, 1)
+end
+local playing, playedFrames, slowCrossings, lastSample = false, 0, 0, 0
+for frame = 1, 600 do
+	local count = if frame % 2 == 0 then 136 else 64
+	heavilyLoaded:push(tone(count), count, 1 / 60)
+	heavilyLoaded:render(output, 800, 1)
+	if heavilyLoaded.ready then
+		playing = true
+		playedFrames += 800
+		for offset = 0, buffer.len(output) - 4, 4 do
+			local sample = buffer.readf32(output, offset)
+			if lastSample <= 0 and sample > 0 then
+				slowCrossings += 1
+			end
+			lastSample = sample
+		end
+	end
+end
+local loadedHz = slowCrossings * outputRate / playedFrames
+assert(playing and heavilyLoaded.underruns == 0 and heavilyLoaded.dropped == 0, heavilyLoaded.underruns)
+assert(math.abs(loadedHz - 1000) < 20, loadedHz)
+print(
+	string.format(
+		"At 25%% guest speed a 1 kHz tone measured %.1f Hz without underruns after playback started.",
+		loadedHz
+	)
+)

@@ -26,7 +26,7 @@ local function widthMask(width)
 end
 
 local function realSegment(selector, base)
-	return { selector = selector, base = base or selector * 16, limit = UINT16 }
+	return { selector = selector, base = base or selector * 16, limit = UINT16, readLimit = UINT16, writeLimit = UINT16 }
 end
 
 local function fault(vector, code)
@@ -188,87 +188,118 @@ end
 
 function Cpu:read(segment, offset, width)
 	local size = widthBytes(width)
+	local linear = segment.base + offset
 	local bus = self.bus
-	if segment.readRam and band(self.control[0], PG) == 0 then
-		local last = offset + size
-		local memory = bus.memory
-		if
-			(offset >= 0 and last <= Bus.CONVENTIONAL_BYTES)
-			or (offset >= 0x100000 and last <= buffer.len(memory) and bus.a20)
-		then
-			if size == 1 then
-				return buffer.readu8(memory, offset)
-			elseif size == 2 then
-				return buffer.readu16(memory, offset)
-			end
-			return buffer.readu32(memory, offset)
+	local memory = bus.memory
+	if
+		segment.readLimit
+		and offset + size - 1 <= segment.readLimit
+		and band(self.control[0], PG) == 0
+		and (
+			(linear >= 0 and linear + size <= Bus.CONVENTIONAL_BYTES)
+			or (bus.a20 and linear >= 0x100000 and linear + size <= buffer.len(memory))
+		)
+	then
+		if size == 1 then
+			return buffer.readu8(memory, linear)
+		elseif size == 2 then
+			return buffer.readu16(memory, linear)
 		end
+		return buffer.readu32(memory, linear)
 	end
 	return self:readLinear(self:segmentAddress(segment, offset, size, false, segment == self.s[SS]), size)
 end
 
 function Cpu:write(segment, offset, width, value)
 	local size = widthBytes(width)
+	local linear = segment.base + offset
 	local bus = self.bus
-	if segment.writeRam and band(self.control[0], PG) == 0 then
-		local last = offset + size
-		local memory = bus.memory
-		if
-			(offset >= 0 and last <= Bus.CONVENTIONAL_BYTES)
-			or (offset >= 0x100000 and last <= buffer.len(memory) and bus.a20)
-		then
-			if size == 1 then
-				buffer.writeu8(memory, offset, value)
-			elseif size == 2 then
-				buffer.writeu16(memory, offset, value)
-			else
-				buffer.writeu32(memory, offset, value)
-			end
-			return
+	local memory = bus.memory
+	if
+		segment.writeLimit
+		and offset + size - 1 <= segment.writeLimit
+		and band(self.control[0], PG) == 0
+		and (
+			(linear >= 0 and linear + size <= Bus.CONVENTIONAL_BYTES)
+			or (bus.a20 and linear >= 0x100000 and linear + size <= buffer.len(memory))
+		)
+	then
+		if size == 1 then
+			buffer.writeu8(memory, linear, value)
+		elseif size == 2 then
+			buffer.writeu16(memory, linear, value)
+		else
+			buffer.writeu32(memory, linear, value)
 		end
+		return
 	end
 	self:writeLinear(self:segmentAddress(segment, offset, size, true, segment == self.s[SS]), size, value)
 end
 
-local function ramRange(cpu, segment, offset, length)
+local function repeatAddress(cpu, segment, offset, length)
 	if segment.unusable or segment.expandDown or offset + length - 1 > math.min(segment.limit, cpu.addressMask) then
 		return nil
 	end
-	return cpu.bus:ramSpan(segment.base + offset, length)
+	return segment.base + offset
 end
 
-function Cpu:repeatRam(opcode, segment, startIp, width, addressSize, count, iterations)
+local function repeatCodeIsSafe(cpu, startIp, target, length)
+	local bus = cpu.bus
+	local code = cpu.s[CS].base + startIp
+	local size = cpu.ip - startIp
+	local first = bus:physical(code)
+	return size > 0
+		and bus:physical(code + size - 1) == first + size - 1
+		and (target >= first + size or first >= target + length)
+end
+
+local function repeatIterations(cpu, count, limit, checkDevices)
+	local iterations = math.min(count, limit)
+	if iterations > 1 and (checkDevices or band(cpu.flags, IF) ~= 0) then
+		local board = cpu.bus.io
+		return if board then math.min(iterations, board:clocksUntilIrq()) else 1
+	end
+	return iterations
+end
+
+function Cpu:repeatMemory(opcode, segment, startIp, width, addressSize, count, iterations)
 	local bus = self.bus
 	local size = widthBytes(width)
 	local length = iterations * size
 	local es = self.s[ES]
 	local di = self:getRegister(7, addressSize)
-	local target = es.writable ~= false and ramRange(self, es, di, length)
-	if not target then
+	local targetAddress = es.writable ~= false and repeatAddress(self, es, di, length)
+	if not targetAddress then
+		return false
+	end
+	local moving = opcode == 0xA4 or opcode == 0xA5
+	local target = bus:ramSpan(targetAddress, length)
+	if not target and not moving then
 		return false
 	end
 
-	local code = self.s[CS].base + startIp
-	local instructionSize = self.ip - startIp
-	local codeStart = bus:physical(code)
-	if
-		instructionSize <= 0
-		or bus:physical(code + instructionSize - 1) ~= codeStart + instructionSize - 1
-		or (target < codeStart + instructionSize and codeStart < target + length)
-	then
+	local mappedTarget = target or bus:physical(targetAddress)
+	if not repeatCodeIsSafe(self, startIp, mappedTarget, length) then
 		return false
 	end
 
 	local memory = bus.memory
-	if opcode == 0xA4 or opcode == 0xA5 then
+	if moving then
 		local si = self:getRegister(6, addressSize)
-		local source = segment.readable ~= false and ramRange(self, segment, si, length)
-		-- Forward REP propagates its own writes when the destination follows
-		-- and overlaps the source; buffer.copy has memmove semantics.
-		if not source or (source < target and target < source + length) then
+		local sourceAddress = segment.readable ~= false and repeatAddress(self, segment, si, length)
+		local source = sourceAddress and bus:ramSpan(sourceAddress, length)
+		if not source then
 			return false
 		end
-		buffer.copy(memory, target, memory, source, length)
+		if target then
+			-- Forward REP can observe its own writes when the spans overlap.
+			if source < target and target < source + length then
+				return false
+			end
+			buffer.copy(memory, target, memory, source, length)
+		elseif not bus:copyRamToVga(targetAddress, mappedTarget, source, length) then
+			return false
+		end
 		self:setRegister(6, addressSize, si + length)
 	else
 		local value = self:getRegister(0, width)
@@ -293,25 +324,60 @@ function Cpu:repeatRam(opcode, segment, startIp, width, addressSize, count, iter
 	return true
 end
 
+function Cpu:repeatVgaBytes(segment, startIp, addressSize, count, iterations, backwards)
+	local bus, es = self.bus, self.s[ES]
+	local si, di = self:getRegister(6, addressSize), self:getRegister(7, addressSize)
+	local back = if backwards then iterations - 1 else 0
+	if si < back or di < back then
+		return false
+	end
+	local source = segment.readable ~= false and repeatAddress(self, segment, si - back, iterations)
+	local target = es.writable ~= false and repeatAddress(self, es, di - back, iterations)
+	if
+		not source
+		or not target
+		or not repeatCodeIsSafe(self, startIp, bus:physical(target), iterations)
+		or not bus:copyPlanarVga(target, source, iterations, backwards)
+	then
+		return false
+	end
+	local delta = if backwards then -iterations else iterations
+	self:setRegister(6, addressSize, si + delta)
+	self:setRegister(7, addressSize, di + delta)
+	self:setRegister(1, addressSize, count - iterations)
+	if count > iterations then
+		self.ip = startIp
+	end
+	return true
+end
+
 function Cpu:stringInstruction(opcode, segment, repeatPrefix, startIp, repeatLimit, wide)
 	local limit = repeatLimit or 1
 	local interrupts = band(self.flags, IF) ~= 0
+	local backwards = band(self.flags, DF) ~= 0
 	if
 		limit > 1
 		and repeatPrefix
 		and (opcode == 0xA4 or opcode == 0xA5 or opcode == 0xAA or opcode == 0xAB)
-		and band(self.flags, DF) == 0
+		and (not backwards or opcode == 0xA4)
 		and band(self.control[0], PG) == 0
 	then
 		local addressSize = self.addressMask == UINT32 and 32 or true
 		local count = self:getRegister(1, addressSize)
-		local iterations = math.min(count, limit)
-		if iterations > 1 and interrupts then
-			local board = self.bus.io
-			iterations = if board then math.min(iterations, board:clocksUntilIrq()) else 1
-		end
-		if iterations > 1 and self:repeatRam(opcode, segment, startIp, wide, addressSize, count, iterations) then
-			return iterations
+		local iterations = repeatIterations(self, count, limit)
+		if iterations > 1 then
+			if not backwards and self:repeatMemory(opcode, segment, startIp, wide, addressSize, count, iterations) then
+				return iterations
+			end
+			if opcode == 0xA4 then
+				local vgaIterations = if interrupts then iterations else repeatIterations(self, count, limit, true)
+				if
+					vgaIterations > 1
+					and self:repeatVgaBytes(segment, startIp, addressSize, count, vgaIterations, backwards)
+				then
+					return vgaIterations
+				end
+			end
 		end
 	end
 	return Cpu8088.stringInstruction(
@@ -395,9 +461,8 @@ function Cpu:descriptor(selector, probe)
 	local readable = not executable or band(access, 2) ~= 0
 	local writable = not executable and band(access, 2) ~= 0
 	local expandDown = not system and not executable and band(access, 4) ~= 0
-	-- Flat segments can address ordinary RAM directly. Page translation,
-	-- bus devices and out-of-range addresses still use the general path.
-	local flat = base == 0 and limit == UINT32 and not expandDown
+	-- Ordinary readable and writable segments can use the RAM path.
+	-- Expand-down segments require the general bounds check.
 	return {
 		selector = selector,
 		address = address,
@@ -414,8 +479,8 @@ function Cpu:descriptor(selector, probe)
 		readable = readable,
 		writable = writable,
 		expandDown = expandDown,
-		readRam = flat and readable,
-		writeRam = flat and writable,
+		readLimit = if readable and not expandDown then limit else nil,
+		writeLimit = if writable and not expandDown then limit else nil,
 	}
 end
 
@@ -431,6 +496,7 @@ function Cpu:loadSegment(index, value)
 		if index ~= CS then
 			-- A real-mode load changes the base but retains the cached limit.
 			segment.limit = self.s[index].limit
+			segment.readLimit, segment.writeLimit = segment.limit, segment.limit
 		end
 	elseif band(selector, 0xFFFC) == 0 and index ~= CS and index ~= SS then
 		segment = { selector = selector, unusable = true, base = 0, limit = 0 }
@@ -489,40 +555,45 @@ function Cpu:setRegister(index, width, value)
 	end
 end
 
+local function setStackPointer(registers, pointer, mask)
+	registers[5] = bor(band(registers[5], bnot(mask)), pointer)
+end
+
 function Cpu:adjustStack(delta)
-	local width = self.s[SS].big and 32 or true
-	local offset = band(self:getRegister(4, width) + delta, widthMask(width))
-	self:setRegister(4, width, offset)
+	local mask = if self.s[SS].big then UINT32 else UINT16
+	local offset = band(self.r[5] + delta, mask)
+	setStackPointer(self.r, offset, mask)
 	return offset
 end
 
 function Cpu:push(value, width)
 	width = width or true
-	local stack = self.s[SS]
-	local stackWidth = stack.big and 32 or true
-	local offset = band(self:getRegister(4, stackWidth) - widthBytes(width), widthMask(stackWidth))
+	local stack, registers = self.s[SS], self.r
+	local mask = if stack.big then UINT32 else UINT16
+	local offset = band(registers[5] - widthBytes(width), mask)
 	self:write(stack, offset, width, value)
-	self:setRegister(4, stackWidth, offset)
+	setStackPointer(registers, offset, mask)
 end
 
 function Cpu:pop(width)
 	width = width or true
-	local stack = self.s[SS]
-	local offset = self:getRegister(4, stack.big and 32 or true)
+	local stack, registers = self.s[SS], self.r
+	local mask = if stack.big then UINT32 else UINT16
+	local offset = band(registers[5], mask)
 	local value = self:read(stack, offset, width)
-	self:adjustStack(widthBytes(width))
+	setStackPointer(registers, band(offset + widthBytes(width), mask), mask)
 	return value
 end
 
 local LEGACY_ADDRESS = {
-	{ 3, 6 },
-	{ 3, 7 },
-	{ 5, 6 },
-	{ 5, 7 },
-	{ 6 },
+	{ 4, 7 }, -- BX + SI
+	{ 4, 8 }, -- BX + DI
+	{ 6, 7 }, -- BP + SI
+	{ 6, 8 }, -- BP + DI
 	{ 7 },
-	{ 5 },
-	{ 3 },
+	{ 8 },
+	{ 6 },
+	{ 4 },
 }
 
 function Cpu:decodeOperand(override, espAdjustment)
@@ -557,8 +628,10 @@ function Cpu:decodeOperand(override, espAdjustment)
 		base = self:fetch(true)
 	else
 		local pair = LEGACY_ADDRESS[operand + 1]
-		base = self:getRegister(pair[1], true) + (pair[2] and self:getRegister(pair[2], true) or 0)
-		slot = pair[1] == 5 and SS or DS
+		local registers = self.r
+		-- The final 16-bit mask also removes each register's upper bits.
+		base = registers[pair[1]] + (pair[2] and registers[pair[2]] or 0)
+		slot = pair[1] == 6 and SS or DS
 	end
 	if mode == 1 then
 		base += signed(self:fetch8(), 0x80)
@@ -966,12 +1039,7 @@ function Cpu:iret(width)
 	self.ip = ip
 end
 
-function Cpu:step(repeatLimit)
-	local ip, code = self.ip, self.s[CS]
-	local ok, result = pcall(Cpu8088.step, self, repeatLimit)
-	if ok then
-		return result
-	end
+function Cpu:finishFault(result, ip, code)
 	if type(result) ~= "table" or result.vector == nil then
 		error(result, 0)
 	end
@@ -990,6 +1058,24 @@ function Cpu:step(repeatLimit)
 			0
 		)
 	end
+end
+
+function Cpu:step(repeatLimit)
+	local ip, code = self.ip, self.s[CS]
+	local ok, result = pcall(Cpu8088.step, self, repeatLimit)
+	if ok then
+		return result
+	end
+	self:finishFault(result, ip, code)
+end
+
+-- The machine's slice is already protected. Keep the start of each
+-- instruction available so a guest fault can be delivered at the same IP.
+function Cpu:stepInSlice(repeatLimit)
+	self.faultIp, self.faultCode = self.ip, self.s[CS]
+	local result = Cpu8088.step(self, repeatLimit)
+	self.faultCode = nil
+	return result
 end
 
 local function multiply(a, b)
@@ -1131,7 +1217,7 @@ function Cpu:imul(register, a, b, width)
 	self.flags = bor(band(self.flags, bnot(CF + OF)), fits and 0 or CF + OF)
 end
 
-function Cpu:additionalOpcode(opcode, width, override, startIp, repeatPrefix)
+function Cpu:additionalOpcode(opcode, width, override, startIp, repeatPrefix, repeatLimit)
 	if opcode == 0x60 then -- PUSHA
 		local stack = self:getRegister(4, width)
 		for register = 0, 7 do
@@ -1157,29 +1243,52 @@ function Cpu:additionalOpcode(opcode, width, override, startIp, repeatPrefix)
 		local addressWidth = self.addressMask == UINT32 and 32 or true
 		local count = self:getRegister(1, addressWidth)
 		if repeatPrefix and count == 0 then
-			return true
+			return
 		end
 		local port = self:getRegister(2, true)
-		local size = widthBytes(band(opcode, 1) ~= 0 and width)
+		local opWidth = band(opcode, 1) ~= 0 and width
+		local size = widthBytes(opWidth)
 		local delta = band(self.flags, DF) ~= 0 and -size or size
 		local input = opcode < 0x6E
 		local reg = input and 7 or 6
 		local index = self:getRegister(reg, addressWidth)
 		local segment = input and self.s[ES] or self.s[override or DS]
-		local opWidth = band(opcode, 1) ~= 0 and width
 		self:checkPort(port, opWidth)
-		if input then
-			self:write(segment, index, opWidth, self.bus:readIo(port, size))
-		else
-			self.bus:writeIo(port, self:read(segment, index, opWidth), size)
+		local iterations = 0
+		if
+			repeatPrefix
+			and opcode == 0x6D
+			and delta > 0
+			and repeatLimit
+			and repeatLimit > 1
+			and band(self.control[0], PG) == 0
+		then
+			local limit = repeatIterations(self, count, repeatLimit, true)
+			if limit > 1 then
+				local length = limit * size
+				local address = segment.writable ~= false and repeatAddress(self, segment, index, length)
+				local target = address and self.bus:ramSpan(address, length)
+				if target and repeatCodeIsSafe(self, startIp, target, length) then
+					iterations = self.bus:readIdeBlock(port, target, limit, size)
+				end
+			end
 		end
-		self:setRegister(reg, addressWidth, index + delta)
+		if iterations == 0 then
+			iterations = 1
+			if input then
+				self:write(segment, index, opWidth, self.bus:readIo(port, size))
+			else
+				self.bus:writeIo(port, self:read(segment, index, opWidth), size)
+			end
+		end
+		self:setRegister(reg, addressWidth, index + delta * iterations)
 		if repeatPrefix then
-			self:setRegister(1, addressWidth, count - 1)
-			if count > 1 then
+			self:setRegister(1, addressWidth, count - iterations)
+			if count > iterations then
 				self.ip = startIp
 			end
 		end
+		return iterations
 	elseif opcode == 0x8F then -- POP r/m
 		local stack = self.s[SS]
 		local stackWidth = stack.big and 32 or true
@@ -1226,10 +1335,7 @@ function Cpu:additionalOpcode(opcode, width, override, startIp, repeatPrefix)
 		local stackWidth = self.s[SS].big and 32 or true
 		self:setRegister(4, stackWidth, self:getRegister(5, stackWidth))
 		self:setRegister(5, width, self:pop(width))
-	else
-		return false
 	end
-	return true
 end
 
 function Cpu:extendedOpcode(opcode, width, override)

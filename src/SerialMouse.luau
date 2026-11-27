@@ -1,7 +1,8 @@
 local band, bor, lshift, rshift = bit32.band, bit32.bor, bit32.lshift, bit32.rshift
 
-local QUEUE_LIMIT = 32
+local QUEUE_LIMIT, MOVEMENT_LIMIT = 32, 1024
 local BYTE_CLOCKS = 8949 -- 1200 baud, one start bit, seven data bits and one stop bit.
+local INTERACTIVE_BYTE_CLOCKS = math.round(BYTE_CLOCKS / 4)
 local SerialMouse = { BASE = 0x3F8 }
 SerialMouse.__index = SerialMouse
 
@@ -12,6 +13,7 @@ function SerialMouse.new(requestInterrupt)
 		bytes = {},
 		buttons = 0,
 		deliverAt = math.huge,
+		reportByteClocks = BYTE_CLOCKS,
 		divisorLow = 0,
 		divisorHigh = 0,
 		interruptEnable = 0,
@@ -19,6 +21,12 @@ function SerialMouse.new(requestInterrupt)
 		modemControl = 0,
 		scratch = 0,
 	}, SerialMouse)
+end
+
+function SerialMouse:useInteractiveTiming()
+	-- A slow guest magnifies the serial delay in wall time. The UART
+	-- still delivers one byte per notification and waits for each read.
+	self.reportByteClocks = INTERACTIVE_BYTE_CLOCKS
 end
 
 function SerialMouse:interrupt()
@@ -29,13 +37,21 @@ end
 
 function SerialMouse:advance(now)
 	local bytes = self.bytes
-	if self.received ~= nil or (#bytes == 0 and #self.pending == 0) then
+	local queued = #bytes > 0 or #self.pending > 0
+	if self.received ~= nil or not queued then
+		self.receiveBlocked = queued and self.received ~= nil
 		self.deliverAt = math.huge
 		return
 	end
 	if #bytes == 0 then
-		local packet = table.remove(self.pending, 1)
-		local dx, dy = band(packet.dx, 255), band(packet.dy, 255)
+		local packet = self.pending[1]
+		local x, y = math.clamp(packet.dx, -128, 127), math.clamp(packet.dy, -128, 127)
+		packet.dx -= x
+		packet.dy -= y
+		if packet.dx == 0 and packet.dy == 0 then
+			table.remove(self.pending, 1)
+		end
+		local dx, dy = band(x, 255), band(y, 255)
 		self.packetMovedAt = if dx ~= 0 or dy ~= 0 then packet.movedAt else nil
 		bytes[1] = bor(0x40, packet.buttons, rshift(band(dy, 0xC0), 4), rshift(dx, 6))
 		bytes[2], bytes[3] = band(dx, 63), band(dy, 63)
@@ -44,7 +60,7 @@ function SerialMouse:advance(now)
 	if #bytes == 0 then
 		self.receivedMotionAt, self.packetMovedAt = self.packetMovedAt, nil
 	end
-	self.deliverAt = now + BYTE_CLOCKS
+	self.deliverAt = now + self.reportByteClocks
 	self:interrupt()
 end
 
@@ -64,20 +80,20 @@ function SerialMouse:move(dx, dy, buttons, now, movedAt)
 	local pending = self.pending
 	local last = pending[#pending]
 	if last and last.buttons == buttons then
-		last.dx = math.clamp(last.dx + dx, -128, 127)
-		last.dy = math.clamp(last.dy + dy, -128, 127)
+		last.dx = math.clamp(last.dx + dx, -MOVEMENT_LIMIT, MOVEMENT_LIMIT)
+		last.dy = math.clamp(last.dy + dy, -MOVEMENT_LIMIT, MOVEMENT_LIMIT)
 		last.movedAt = last.movedAt or movedAt
 	else
 		local nextIndex = math.min(#pending + 1, QUEUE_LIMIT)
 		pending[nextIndex] = {
-			dx = math.clamp(dx, -128, 127),
-			dy = math.clamp(dy, -128, 127),
+			dx = math.clamp(dx, -MOVEMENT_LIMIT, MOVEMENT_LIMIT),
+			dy = math.clamp(dy, -MOVEMENT_LIMIT, MOVEMENT_LIMIT),
 			buttons = buttons,
 			movedAt = movedAt,
 		}
 	end
 	if self.received == nil and self.deliverAt == math.huge then
-		self.deliverAt = now + BYTE_CLOCKS
+		self.deliverAt = now + self.reportByteClocks
 	end
 end
 
@@ -92,10 +108,13 @@ function SerialMouse:read(port, now)
 		self.received = nil
 		if self.receivedMotionAt then
 			self.lastMotionReadAt, self.receivedMotionAt = self.receivedMotionAt, nil
+			self.lastMotionDeliveredAt = os.clock()
+			self.motionReports = (self.motionReports or 0) + 1
 		end
 		if (#self.bytes > 0 or #self.pending > 0) and self.deliverAt == math.huge then
-			self.deliverAt = now + BYTE_CLOCKS
+			self.deliverAt = now + (self.receiveBlocked and 1 or self.reportByteClocks)
 		end
+		self.receiveBlocked = false
 		return byte or 0
 	elseif register == 1 then
 		return if divisor then self.divisorHigh else self.interruptEnable
@@ -144,8 +163,9 @@ function SerialMouse:write(port, value, now)
 			table.clear(self.pending)
 			table.clear(self.bytes)
 			self.buttons = 0
-			self.received = nil
+			self.received, self.receiveBlocked = nil, false
 			self.packetMovedAt, self.receivedMotionAt, self.lastMotionReadAt = nil, nil, nil
+			self.lastMotionDeliveredAt = nil
 			self.deliverAt = math.huge
 			if powered then
 				self.bytes[1] = 0x4D -- Microsoft serial mouse identification byte.

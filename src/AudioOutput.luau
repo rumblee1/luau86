@@ -5,9 +5,11 @@ local RunService = game:GetService("RunService")
 local modules = script.Parent
 local GuestAudio = require(modules:WaitForChild("GuestAudio"))
 local PcmQueue = require(modules:WaitForChild("PcmQueue"))
+local PcmWriter = require(modules:WaitForChild("PcmWriter"))
 
 local MIN_OUTPUT_SECONDS = 0.064
-local MAX_OUTPUT_SECONDS = 0.100
+local MAX_OUTPUT_SECONDS = 0.140
+local UNDERRUN_MARGIN = 0.024
 local OUTPUT_MARGIN = 0.012
 
 local AudioOutput = {}
@@ -35,7 +37,7 @@ function AudioOutput:startPcm()
 	self.writer, self.wire = writer, wire
 	self.capacity = capacity
 	self.outputRate = writer.SampleRate
-	self.channels = {}
+	self.pcm = PcmWriter.new(self.outputRate)
 	self.queue = PcmQueue.new(GuestAudio.SAMPLE_RATE, self.outputRate)
 	self.refillInterval = 0
 	self.writerUnderruns = 0
@@ -43,6 +45,8 @@ function AudioOutput:startPcm()
 	self.lastReport, self.lastDrain, self.lastSubmit = now, now, now
 	self.gui:SetAttribute("AudioUnderruns", 0)
 	self.gui:SetAttribute("AudioWriterUnderruns", 0)
+	self.gui:SetAttribute("AudioDroppedSamples", 0)
+	self.gui:SetAttribute("AudioBufferedMs", 0)
 	self.guestAudio = self.board:enableAudio()
 	self.gui:SetAttribute("AudioStatus", "Checking Studio PCM")
 end
@@ -52,7 +56,7 @@ function AudioOutput:startSpeaker(reason)
 		self.pcmFolder:Destroy()
 		self.pcmFolder, self.writer, self.wire = nil, nil, nil
 		self.board:disableAudio()
-		self.guestAudio, self.queue = nil, nil
+		self.guestAudio, self.queue, self.pcm = nil, nil, nil
 	end
 
 	-- This built-in Roblox tone provides an approximation of the PC speaker
@@ -68,6 +72,8 @@ function AudioOutput:startSpeaker(reason)
 	self.gui:SetAttribute("AudioStatus", "PC speaker only")
 	self.gui:SetAttribute("AudioUnderruns", nil)
 	self.gui:SetAttribute("AudioWriterUnderruns", nil)
+	self.gui:SetAttribute("AudioDroppedSamples", nil)
+	self.gui:SetAttribute("AudioBufferedMs", nil)
 	self.gui:SetAttribute("AudioDetail", reason)
 end
 
@@ -98,7 +104,8 @@ function AudioOutput:submitPcm(volume)
 	self.queue:push(source, count, elapsed)
 
 	local space = math.clamp(self.writer:Space(), 0, self.capacity)
-	if self.pcmReady and space == self.capacity and self.spaceAfterWrite < self.capacity then
+	local starved = self.pcmReady and space == self.capacity and self.spaceAfterWrite < self.capacity
+	if starved then
 		self.writerUnderruns += 1
 	end
 	if self.spaceAfterWrite and self.wire.Connected and space > self.spaceAfterWrite then
@@ -116,24 +123,21 @@ function AudioOutput:submitPcm(volume)
 
 	-- Keep enough samples available to bridge uneven calls from Heartbeat.
 	-- Reduce the extra delay gradually once the client is running smoothly.
-	self.refillInterval = math.max(math.min(elapsed, MAX_OUTPUT_SECONDS), self.refillInterval * math.exp(-elapsed / 2))
+	local observed = elapsed + (if starved then UNDERRUN_MARGIN else 0)
+	self.refillInterval = math.max(math.min(observed, MAX_OUTPUT_SECONDS), self.refillInterval * math.exp(-elapsed / 2))
 	local reserve = math.clamp(self.refillInterval + OUTPUT_MARGIN, MIN_OUTPUT_SECONDS, MAX_OUTPUT_SECONDS)
 	local target = math.min(self.capacity, math.ceil(self.outputRate * reserve))
 	local frames = target - (self.capacity - space)
-	if frames > 0 then
-		local bytes = frames * 4
-		local output = self.channels[1]
-		if not output or buffer.len(output) ~= bytes then
-			output = buffer.create(bytes)
-			self.channels[1] = output
-		end
-		self.queue:render(output, frames, volume)
-		self.spaceAfterWrite = space - self.writer:Write(self.channels)
-	end
+	self.spaceAfterWrite = self.pcm:refill(self.writer, self.queue, space, frames, volume)
 	if now - self.lastReport >= 1 then
 		self.lastReport = now
 		self.gui:SetAttribute("AudioUnderruns", self.queue.underruns)
 		self.gui:SetAttribute("AudioWriterUnderruns", self.writerUnderruns)
+		self.gui:SetAttribute("AudioDroppedSamples", self.queue.dropped)
+		self.gui:SetAttribute(
+			"AudioBufferedMs",
+			math.round(1000 * (self.capacity - self.spaceAfterWrite) / self.outputRate)
+		)
 	end
 end
 

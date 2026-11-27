@@ -1,5 +1,9 @@
 -- Keep sample order across Roblox frames. When the guest runs slowly, overlap
 -- neighboring pieces of the waveform instead of lowering the playback pitch.
+-- A slow CPU slice can supply less than a third of real-time audio.
+-- Allow the overlap-add resampler to consume samples at that pace.
+local MIN_TEMPO, MAX_TEMPO = 0.20, 1.25
+
 local PcmQueue = {}
 PcmQueue.__index = PcmQueue
 
@@ -43,7 +47,7 @@ function PcmQueue:push(source, count, elapsed)
 		self.rateInput += count
 		self.rateSeconds += elapsed
 		if self.rateSeconds >= 0.120 then
-			local measured = math.clamp(self.rateInput / (self.rateSeconds * self.sourceRate), 0.35, 1.25)
+			local measured = math.clamp(self.rateInput / (self.rateSeconds * self.sourceRate), MIN_TEMPO, MAX_TEMPO)
 			self.tempo += (measured - self.tempo) * 0.55
 			self.rateInput, self.rateSeconds = 0, 0
 		end
@@ -87,7 +91,7 @@ end
 
 local function alignedStart(queue, expected, first, last)
 	local best = math.clamp(expected, first, last)
-	if not queue.hasTail or not queue.tailAudible then
+	if not queue.hasTail or not queue.tailAudible or (queue.start + best) % queue.capacity == queue.tailStart then
 		return best
 	end
 	local score = matchScore(queue, best)
@@ -107,6 +111,14 @@ local function alignedStart(queue, expected, first, last)
 	return best
 end
 
+local function copySamples(queue, output, start, count)
+	local first = math.min(count, queue.capacity - start)
+	buffer.copy(output, 0, queue.samples, start * 4, first * 4)
+	if first < count then
+		buffer.copy(output, first * 4, queue.samples, 0, (count - first) * 4)
+	end
+end
+
 function PcmQueue:nextGrain()
 	local hop, overlap = self.hop, self.overlap
 	local expected = math.floor(self.position + 0.5)
@@ -116,28 +128,37 @@ function PcmQueue:nextGrain()
 		return false
 	end
 	local actual = alignedStart(self, expected, first, last)
-	local samples, grain, tail = self.samples, self.grain, self.tail
-	local start, capacity = self.start + actual, self.capacity
-	for index = 0, hop - 1 do
-		local sample = buffer.readf32(samples, ((start + index) % capacity) * 4)
-		if self.hasTail and index < overlap then
-			local old = buffer.readf32(tail, index * 4)
-			sample = old + (sample - old) * (index / overlap)
+	local grain, tail, capacity = self.grain, self.tail, self.capacity
+	local start = (self.start + actual) % capacity
+	copySamples(self, grain, start, hop)
+	if self.hasTail and start ~= self.tailStart then
+		for index = 0, overlap - 1 do
+			local offset = index * 4
+			local old = buffer.readf32(tail, offset)
+			local sample = buffer.readf32(grain, offset)
+			buffer.writef32(grain, offset, old + (sample - old) * (index / overlap))
 		end
-		buffer.writef32(grain, index * 4, sample)
 	end
+	self.tailStart = (start + hop) % capacity
+	copySamples(self, tail, self.tailStart, overlap)
 	local audible = false
-	for index = 0, overlap - 1 do
-		local sample = buffer.readf32(samples, ((start + hop + index) % capacity) * 4)
-		buffer.writef32(tail, index * 4, sample)
-		audible = audible or math.abs(sample) > 1e-5
+	for offset = 0, overlap * 4 - 4, 4 do
+		if math.abs(buffer.readf32(tail, offset)) > 1e-5 then
+			audible = true
+			break
+		end
 	end
 	self.hasTail, self.tailAudible = true, audible
 	-- The nominal read position controls tempo. A waveform match may move a
 	-- grain slightly, but its offset must not accumulate across the clip.
 	local fullness = self.count - self.position
 	local correction = (fullness - self.threshold) / (4 * self.threshold)
-	local tempo = math.clamp(self.tempo + correction, 0.35, 1.25)
+	local pace = self.tempo
+	if fullness < self.threshold * 0.75 and self.rateSeconds >= 0.025 then
+		-- Slow down before the regular estimate catches up to a sudden stall.
+		pace = math.min(pace, self.rateInput / (self.rateSeconds * self.sourceRate))
+	end
+	local tempo = math.clamp(pace + correction, MIN_TEMPO, MAX_TEMPO)
 	self.position += hop * tempo
 	local discard = math.max(0, math.floor(self.position) - self.search)
 	self.start = (self.start + discard) % capacity

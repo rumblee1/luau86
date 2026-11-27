@@ -209,14 +209,18 @@ local function captureCamera()
 	end
 end
 
+local DISK_LOAD_SLICE = 0.005
+
 local function loadDisk(folder)
 	local index = require(assert(folder:WaitForChild("Index", 10), "Missing disk index"))
 	local diskImage = buffer.create(index.size)
+	local deadline = os.clock() + DISK_LOAD_SLICE
 	for number, part in index.parts do
 		local source = assert(folder:WaitForChild(part[2], 10), "Missing disk part " .. part[2])
 		decode(require(source), diskImage, part[1])
-		if number % 8 == 0 then
+		if number < #index.parts and os.clock() >= deadline then
 			task.wait()
+			deadline = os.clock() + DISK_LOAD_SLICE
 		end
 	end
 	return diskImage
@@ -250,6 +254,10 @@ if selector then
 end
 
 local function startRuntime()
+	local mouse = machine.board.serialMouse
+	if mouse then
+		mouse:useInteractiveTiming()
+	end
 	audioOutput = AudioOutput.new(gui, machine.board)
 	frameBudget = FrameBudget.new(Machine.PIT_HZ)
 	table.clear(held)
@@ -293,7 +301,7 @@ power.Activated:Connect(function()
 	runningProfile = selectedProfile
 	startRuntime()
 	if performance then
-		performance:start(profile.name, poweredAt, os.clock())
+		performance:start(profile.name, poweredAt, os.clock(), machine.board)
 	end
 	failed = false
 	captureCamera()
@@ -362,8 +370,8 @@ local function trackMouse(position)
 	-- Track the unlocked cursor by position. Only consecutive samples over
 	-- the display should contribute relative movement to the guest.
 	if lastMousePosition then
-		mouseDX = math.clamp(mouseDX + position.X - lastMousePosition.X, -128, 127)
-		mouseDY = math.clamp(mouseDY + position.Y - lastMousePosition.Y, -128, 127)
+		mouseDX += position.X - lastMousePosition.X
+		mouseDY += position.Y - lastMousePosition.Y
 	end
 	lastMousePosition = position
 	return true
@@ -391,7 +399,7 @@ local keyDown = UserInputService.InputBegan:Connect(function(input)
 		held[key] = scan
 		scanCount[scan] = (scanCount[scan] or 0) + 1
 		if scanCount[scan] == 1 then
-			if performance and scan == scanCodes.Return and profiles[runningProfile].name == "FreeDOS" then
+			if performance and scan == scanCodes.Return then
 				local vga = machine.bus.vga
 				if vga and not vga.active then
 					local screenText = readScreen(machine.bus, machine.board):gsub("%s+$", "")
@@ -449,19 +457,6 @@ local focusGained = UserInputService.WindowFocused:Connect(function()
 end)
 local textFocusConnection = UserInputService.TextBoxFocused:Connect(releaseAllInputs)
 
-local function runSlice(pit, target, deadline)
-	while pit.now < target and os.clock() < deadline do
-		for _ = 1, 64 do
-			if pit.now >= target then
-				break
-			end
-			if machine:step(target - pit.now) then
-				return true
-			end
-		end
-	end
-end
-
 local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 	if not machine or failed or loading then
 		return
@@ -483,7 +478,7 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 	local startingClocks = pit.now
 	local startedAt = os.clock()
 	debug.profilebegin("Luau86 CPU")
-	local ran, resetOrError = pcall(runSlice, pit, startingClocks + credit, startedAt + budget)
+	local ran, resetOrError = pcall(machine.runSlice, machine, startingClocks + credit, startedAt + budget)
 	debug.profileend()
 	local devicesStartedAt = os.clock()
 	local cpuSeconds = devicesStartedAt - startedAt
@@ -502,7 +497,7 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 		stopAudio()
 		startRuntime()
 		if performance then
-			performance:start(profiles[runningProfile].name, startedAt, os.clock())
+			performance:start(profiles[runningProfile].name, startedAt, os.clock(), machine.board)
 		end
 		return
 	end
@@ -519,6 +514,7 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 		end
 	end
 
+	local audioSeconds = if performance then os.clock() - devicesStartedAt else 0
 	local presented = false
 	local vgaSeconds = 0
 	if vga and vga.active then
@@ -586,7 +582,17 @@ local heartbeat = RunService.Heartbeat:Connect(function(elapsed)
 	frameBudget:endFrame(clocks, cpuSeconds, os.clock() - devicesStartedAt)
 	if performance then
 		local mouse = machine.board.serialMouse
-		performance:frame(elapsed, clocks, cpuSeconds, vgaSeconds, budget, presented, mouse and mouse.lastMotionReadAt)
+		performance:frame(
+			elapsed,
+			clocks,
+			cpuSeconds,
+			audioSeconds,
+			vgaSeconds,
+			budget,
+			presented,
+			mouse,
+			frameBudget.saturated
+		)
 	end
 end)
 

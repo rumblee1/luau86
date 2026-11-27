@@ -10,7 +10,6 @@ function Pit.new(onTick)
 		channels = channels,
 		timer = channels[0],
 		refresh = channels[1],
-		deadline = math.huge,
 		now = 0,
 		onTick = onTick,
 	}, Pit)
@@ -20,30 +19,28 @@ function Pit:clocksUntilIrq()
 	return self.timer.next - self.now
 end
 
-local function updateDeadline(self)
-	local refresh = self.refresh
-	local refreshAt = if refresh.mode == 2 then refresh.next else math.huge
-	self.deadline = math.min(self.timer.next, refreshAt)
+function Pit:raiseTimerIrq()
+	local timer, now = self.timer, self.now
+	timer.next = if timer.mode == 0 then math.huge else now + timer.reload - (now - timer.start) % timer.reload
+	self.onTick()
+end
+
+function Pit:takeRefresh()
+	local refresh, now = self.refresh, self.now
+	if refresh.mode ~= 2 or now < refresh.next then
+		return 0
+	end
+	local periods = math.floor((now - refresh.next) / refresh.reload) + 1
+	refresh.next += periods * refresh.reload
+	return periods
 end
 
 function Pit:advance(clocks)
-	local now = self.now + clocks
-	self.now = now
-	if now < self.deadline then
-		return 0
+	self.now += clocks
+	if self.now >= self.timer.next then
+		self:raiseTimerIrq()
 	end
-	local timer = self.timer
-	if now >= timer.next then
-		timer.next = if timer.mode == 0 then math.huge else now + timer.reload - (now - timer.start) % timer.reload
-		self.onTick()
-	end
-	local refresh, periods = self.refresh, 0
-	if refresh.mode == 2 and now >= refresh.next then
-		periods = math.floor((now - refresh.next) / refresh.reload) + 1
-		refresh.next += periods * refresh.reload
-	end
-	updateDeadline(self)
-	return periods
+	return self:takeRefresh()
 end
 
 function Pit:gate2(high)
@@ -109,7 +106,6 @@ function Pit:write(port, value)
 				channel.access, channel.mode = access, mode >= 6 and mode - 4 or mode
 				channel.running, channel.readHigh, channel.low, channel.latched = false, false, nil, nil
 				channel.next = math.huge
-				updateDeadline(self)
 			end
 		end
 		return
@@ -129,7 +125,6 @@ function Pit:write(port, value)
 	channel.reload = value == 0 and 0x10000 or value
 	channel.start, channel.running = self.now, true
 	channel.next = self.now + channel.reload
-	updateDeadline(self)
 end
 
 return Pit

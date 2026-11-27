@@ -130,3 +130,17 @@ assert(board.pit.now == before + 597 and cpu.halted and board.pic.pending == 32)
 machine:step(400)
 assert(not cpu.halted and cpu.ip == 0x501)
 print("A sleeping CPU advanced to the next DMA interrupt while preserving the callback deadline")
+
+local GuestAudio = require("../src/GuestAudio")
+local timer = { now = 0 }
+local waveform = GuestAudio.new(timer, 240000)
+waveform:setDac(0.75, 5)
+waveform:setDac(-0.5, 40)
+waveform:setDac(0, 65)
+timer.now = 80
+samples, count = waveform:take()
+assert(count == 8)
+for index, level in { 0, 0.75, 0.75, 0.75, -0.5, -0.5, -0.5, 0 } do
+	assert(buffer.readf32(samples, (index - 1) * 4) == level, "DMA must hold each level until the next write")
+end
+print("Guest waveform kept its sample timing through DAC changes")

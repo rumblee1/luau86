@@ -82,9 +82,11 @@ function CgaText:update(bus, board)
 
 	local crtc = board.crtc
 	local start = buffer.readu8(crtc, 12) * 256 + buffer.readu8(crtc, 13)
-	local cursor = buffer.readu8(crtc, 14) * 256 + buffer.readu8(crtc, 15)
+	local cursor = band(buffer.readu8(crtc, 14) * 256 + buffer.readu8(crtc, 15), 0x1FFF)
 	local cursorControl = buffer.readu8(crtc, 10)
 	local cursorMode = extract(cursorControl, 5, 2)
+	local cursorTop, cursorBottom = band(cursorControl, 31), band(buffer.readu8(crtc, 11), 31)
+	local memory = bus.memory
 	local cursorVisible = cursorMode == 0 or (cursorMode >= 2 and phase == 0)
 	local first, last = ROWS, -1
 
@@ -94,17 +96,16 @@ function CgaText:update(bus, board)
 			local address = band(start + index, 0x1FFF)
 			local character, attribute, cursorStart, cursorEnd = 0, 0, CELL_SIZE, 0
 			if visible then
-				character = bus:read8(VIDEO_BASE + 2 * address)
-				attribute = bus:read8(VIDEO_BASE + 2 * address + 1)
+				local cell = buffer.readu16(memory, VIDEO_BASE + 2 * address)
+				character, attribute = band(cell, 0xFF), extract(cell, 8, 8)
 				if blink and band(attribute, 0x80) ~= 0 then
 					attribute = band(attribute, 0x7F)
 					if phase ~= 0 then
 						attribute = band(attribute, 0x70) + extract(attribute, 4, 3)
 					end
 				end
-				if cursorVisible and address == band(cursor, 0x1FFF) then
-					cursorStart = band(cursorControl, 31)
-					cursorEnd = band(buffer.readu8(crtc, 11), 31)
+				if cursorVisible and address == cursor then
+					cursorStart, cursorEnd = cursorTop, cursorBottom
 				end
 			end
 
