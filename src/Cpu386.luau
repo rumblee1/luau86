@@ -8,7 +8,7 @@ local shiftRight, extract = bit32.rshift, bit32.extract
 local ES, CS, SS, DS, FS, GS = 1, 2, 3, 4, 5, 6
 local CF, ZF, IF, DF, OF = 0x1, 0x40, 0x200, 0x400, 0x800
 local UINT16, UINT32 = 0xFFFF, 0xFFFFFFFF
-local PE, PG = 1, 0x80000000
+local PE, VM, PG = 1, 0x20000, 0x80000000
 
 local Cpu = setmetatable({}, { __index = Cpu8088 })
 Cpu.__index = Cpu
@@ -56,6 +56,10 @@ end
 
 function Cpu:protected()
 	return band(self.control[0], PE) ~= 0
+end
+
+function Cpu:virtual8086()
+	return self:protected() and band(self.flags, VM) ~= 0
 end
 
 function Cpu:translate(linear, write, supervisor)
@@ -491,9 +495,9 @@ end
 function Cpu:loadSegment(index, value)
 	local selector = band(value, UINT16)
 	local segment
-	if not self:protected() then
+	if not self:protected() or self:virtual8086() then
 		segment = realSegment(selector)
-		if index ~= CS then
+		if index ~= CS and not self:virtual8086() then
 			-- A real-mode load changes the base but retains the cached limit.
 			segment.limit = self.s[index].limit
 			segment.readLimit, segment.writeLimit = segment.limit, segment.limit
@@ -641,10 +645,13 @@ function Cpu:decodeOperand(override, espAdjustment)
 	return register, band(base, self.addressMask), self.s[override or slot]
 end
 
-function Cpu:restoreFlags(value, width)
+function Cpu:restoreFlags(value, width, allowVirtual)
 	local mask = width == 32 and 0x00037FD5 or 0x7FD5
+	if not allowVirtual then
+		mask = band(mask, bnot(VM))
+	end
 	if self:protected() and self.cpl ~= 0 then
-		mask = band(mask, bnot(0x3000))
+		mask = band(mask, bnot(0x23000))
 	end
 	if self:protected() and self.cpl > extract(self.flags, 12, 2) then
 		mask = band(mask, bnot(IF))
@@ -655,6 +662,8 @@ end
 function Cpu:interrupt(vector, software, errorCode)
 	local width = true
 	local offset, selector, target
+	local virtual8086 = self:virtual8086()
+	local savedFlags = self.flags
 	if self:protected() then
 		local address = vector * 8
 		local code = address + 2
@@ -687,9 +696,12 @@ function Cpu:interrupt(vector, software, errorCode)
 		if not target.present then
 			fault(11, band(selector, 0xFFFC))
 		end
+		if virtual8086 and (target.dpl ~= 0 or target.conforming) then
+			fault(13, band(selector, 0xFFFC))
+		end
 		if target.dpl < self.cpl and not target.conforming then
 			local tr = self.tr
-			if not tr then
+			if not tr or (virtual8086 and (width ~= 32 or not tr.big)) then
 				fault(10, 0)
 			end
 			local slot = tr.big and 4 + target.dpl * 8 or 2 + target.dpl * 4
@@ -700,13 +712,21 @@ function Cpu:interrupt(vector, software, errorCode)
 			local stack = self:readLinear(tr.base + slot, size, true)
 			local ss = self:readLinear(tr.base + slot + size, 2, true)
 			local oldStack, oldSs = self.r[5], self:selector(SS)
+			if virtual8086 then
+				self.flags = band(self.flags, bnot(VM))
+			end
 			self.cpl = target.dpl
 			self:loadSegment(SS, ss)
 			self.r[5] = stack
+			if virtual8086 then
+				for _, index in { GS, FS, DS, ES } do
+					self:push(self:selector(index), 32)
+				end
+			end
 			self:push(oldSs, width)
 			self:push(oldStack, width)
 		end
-		self:push(self.flags, width)
+		self:push(savedFlags, width)
 		if band(kind, 1) == 0 then
 			self.flags = band(self.flags, bnot(IF))
 		end
@@ -726,7 +746,12 @@ function Cpu:interrupt(vector, software, errorCode)
 	if self:protected() and errorCode ~= nil then
 		self:push(errorCode, width)
 	end
-	self.flags = band(self.flags, bnot(0x14100))
+	self.flags = band(self.flags, bnot(0x14100 + (virtual8086 and VM or 0)))
+	if virtual8086 then
+		for _, index in { ES, DS, FS, GS } do
+			self:loadSegment(index, 0)
+		end
+	end
 	self:loadSegment(CS, target and band(selector, 0xFFFC) + self.cpl or selector)
 	self.ip = offset
 	self.halted = false
@@ -807,6 +832,9 @@ function Cpu:taskSwitch(selector, operation)
 		self.ldt = table
 	end
 	self.cpl = band(segments[CS], 3)
+	if self:virtual8086() then
+		self.cpl = 3
+	end
 	for _, index in TASK_SEGMENTS do
 		self:loadSegment(index, segments[index])
 	end
@@ -912,7 +940,7 @@ function Cpu:transferThroughCallGate(gate, call)
 end
 
 function Cpu:farReturn(width, discard)
-	if not self:protected() then
+	if not self:protected() or self:virtual8086() then
 		return Cpu8088.farReturn(self, width, discard)
 	end
 	local stack, pointer = self.s[SS], self.r[5]
@@ -962,7 +990,7 @@ function Cpu:farReturn(width, discard)
 end
 
 function Cpu:farTransfer(selector, offset, width, call)
-	if not self:protected() then
+	if not self:protected() or self:virtual8086() then
 		return Cpu8088.farTransfer(self, selector, offset, width, call)
 	end
 	local code, rpl = band(selector, 0xFFFC), band(selector, 3)
@@ -1004,6 +1032,19 @@ function Cpu:farTransfer(selector, offset, width, call)
 end
 
 function Cpu:iret(width)
+	if self:virtual8086() then
+		if self.cpl > extract(self.flags, 12, 2) then
+			fault(13, 0)
+		end
+		local ip, cs, flags = self:pop(width), band(self:pop(width), UINT16), self:pop(width)
+		self:restoreFlags(flags, width)
+		self:loadSegment(CS, cs)
+		if ip > self.s[CS].limit then
+			fault(13, 0)
+		end
+		self.ip = ip
+		return
+	end
 	if self:protected() and band(self.flags, 0x4000) ~= 0 then
 		if not self.tr then
 			fault(10, 0)
@@ -1012,6 +1053,28 @@ function Cpu:iret(width)
 		return
 	end
 	local ip, cs, flags = self:pop(width), band(self:pop(width), UINT16), self:pop(width)
+	if width == 32 and self.cpl == 0 and band(flags, VM) ~= 0 then
+		local stack, ss = self:pop(32), band(self:pop(32), UINT16)
+		local es, ds, fs, gs =
+			band(self:pop(32), UINT16),
+			band(self:pop(32), UINT16),
+			band(self:pop(32), UINT16),
+			band(self:pop(32), UINT16)
+		self:restoreFlags(flags, width, true)
+		self.cpl = 3
+		self:loadSegment(CS, cs)
+		self:loadSegment(SS, ss)
+		self:loadSegment(ES, es)
+		self:loadSegment(DS, ds)
+		self:loadSegment(FS, fs)
+		self:loadSegment(GS, gs)
+		self.r[5] = stack
+		if ip > self.s[CS].limit then
+			fault(13, 0)
+		end
+		self.ip = ip
+		return
+	end
 	if self:protected() then
 		local level = band(cs, 3)
 		if level < self.cpl then
@@ -1128,6 +1191,9 @@ function Cpu:checkInterruptFlag()
 end
 
 function Cpu:checkPort(port, width)
+	if self:virtual8086() and extract(self.flags, 12, 2) ~= 3 then
+		fault(13, 0)
+	end
 	if self.cpl <= extract(self.flags, 12, 2) then
 		return
 	end
@@ -1222,7 +1288,20 @@ function Cpu:imul(register, a, b, width)
 end
 
 function Cpu:additionalOpcode(opcode, width, override, startIp, repeatPrefix, repeatLimit)
-	if opcode == 0x60 then -- PUSHA
+	if opcode == 0x63 then -- ARPL
+		if not self:protected() or self:virtual8086() then
+			fault(6)
+		end
+		local register, operand, segment = self:decodeOperand(override)
+		local destination = self:readOperand(operand, segment, true)
+		local source = self:getRegister(register, true)
+		local adjusted = band(destination, 3) < band(source, 3)
+		self.flags = band(self.flags, bnot(ZF))
+		if adjusted then
+			self:writeOperand(operand, segment, true, band(destination, 0xFFFC) + band(source, 3))
+			self.flags = bor(self.flags, ZF)
+		end
+	elseif opcode == 0x60 then -- PUSHA
 		local stack = self:getRegister(4, width)
 		for register = 0, 7 do
 			self:push(register == 4 and stack or self:getRegister(register, width), width)
@@ -1585,7 +1664,7 @@ function Cpu:extendedOpcode(opcode, width, override)
 	elseif opcode == 0xFF then -- Reserved encoding
 		fault(6)
 	else
-		error(string.format("Unsupported 386 opcode 0F %02X at %04X:%08X", opcode, self:selector(CS), self.ip - 2), 0)
+		fault(6)
 	end
 end
 

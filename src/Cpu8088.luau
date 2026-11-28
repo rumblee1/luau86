@@ -458,6 +458,7 @@ local PREFIX = {
 local ADDITIONAL_386 = {
 	[0x60] = true,
 	[0x61] = true,
+	[0x63] = true,
 	[0x68] = true,
 	[0x69] = true,
 	[0x6A] = true,
@@ -642,10 +643,12 @@ function Cpu:step(repeatLimit)
 		end
 	elseif opcode == 0x8C or opcode == 0x8E then
 		local register, operand, segment = self:decodeOperand(override)
-		assert(
-			register <= (self.is386 and 5 or 3) and (opcode == 0x8C or register ~= CS - 1),
-			"Invalid segment register"
-		)
+		if register > (self.is386 and 5 or 3) or (opcode == 0x8E and register == CS - 1) then
+			if self.is386 then
+				error({ vector = 6 }, 0)
+			end
+			error("Invalid segment register", 0)
+		end
 		if opcode == 0x8C then
 			self:writeOperand(operand, segment, segment == nil and operandSize or true, self:selector(register + 1))
 		else

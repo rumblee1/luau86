@@ -50,4 +50,36 @@ buffer.writeu16(memory, 6 * 4 + 2, 0)
 buffer.writestring(memory, 0x2000, string.char(0x0F, 0xFF))
 faultCpu:step()
 assert(faultCpu.ip == 0x4000 and buffer.readu16(memory, 0x2FFA) == 0x2000)
-print("Reserved opcode delivers a restartable invalid-opcode fault")
+faultCpu.ip, faultCpu.r[5] = 0x2000, 0x3000
+buffer.writestring(memory, 0x2000, string.char(0x0F, 0xA6))
+faultCpu:step()
+assert(faultCpu.ip == 0x4000 and buffer.readu16(memory, 0x2FFA) == 0x2000)
+for _, instruction in
+	{
+		string.char(0x8E, 0xF0),
+		string.char(0x8E, 0x08),
+	}
+do
+	faultCpu.ip, faultCpu.r[5] = 0x2000, 0x3000
+	buffer.writestring(memory, 0x2000, instruction)
+	faultCpu:step()
+	assert(faultCpu.ip == 0x4000 and buffer.readu16(memory, 0x2FFA) == 0x2000)
+end
+print("Reserved opcodes and invalid segment-register encodings deliver restartable invalid-opcode faults")
+
+local arplCpu = Cpu386.new(bus)
+arplCpu:loadSegment(2, 0)
+arplCpu.control[0], arplCpu.ip, arplCpu.flags = 0x11, 0x5000, 0x897
+arplCpu:setRegister(0, 32, 0xDEAD1230)
+arplCpu:setRegister(1, 16, 0x0003)
+buffer.writestring(memory, 0x5000, string.char(0x66, 0x63, 0xC8))
+arplCpu:step()
+assert(arplCpu:getRegister(0, 32) == 0xDEAD1233 and arplCpu.flags == 0x8D7)
+
+arplCpu.ip, arplCpu.flags = 0x5000, 0x8D7
+arplCpu:setRegister(0, 16, 0x1233)
+arplCpu:setRegister(1, 16, 0x0001)
+buffer.writestring(memory, 0x5000, string.char(0x63, 0xC8))
+arplCpu:step()
+assert(arplCpu:getRegister(0, 16) == 0x1233 and arplCpu.flags == 0x897)
+print("386 ARPL adjusts a selector RPL and updates only ZF")
