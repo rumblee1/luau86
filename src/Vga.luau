@@ -34,6 +34,8 @@ local Vga = {
 -- Track 128-byte chunks of interleaved VRAM so guest writes stay cheap.
 local DIRTY_BLOCKS = Vga.MEMORY_SIZE / 32
 local MAX_UPLOAD_RECTS = 8
+local REPAINT_BLOCK_GROUPS = 32
+local MAX_REPAINT_FRAME_SECONDS = 1 / 40
 
 Vga.__index = Vga
 
@@ -60,6 +62,8 @@ function Vga.new()
 		attributeVideoEnabled = false,
 		miscellaneous = 0,
 		latches = 0,
+		planes = 0,
+		readMap = 0,
 		sequencerIndex = 0,
 		graphicsIndex = 0,
 		pixelMask = 0xFF,
@@ -69,6 +73,14 @@ function Vga.new()
 		active = false,
 		dirty = true,
 	}, Vga)
+end
+
+local function updateDirectWrite(self)
+	self.directWrite = self.writeMode == 0
+		and self.bitMask == 255
+		and self.rotate == 0
+		and self.operation == 0
+		and self.enableSetReset == 0
 end
 
 function Vga:updateMode()
@@ -83,16 +95,14 @@ function Vga:updateMode()
 	self.singlePlane = singlePlanes[self.planes]
 	self.writeMode = band(graphicsMode, 3)
 	self.readMode = band(graphicsMode, 8) ~= 0
+	self.readMap = band(buffer.readu8(self.graphics, 4), 3)
 	self.bitMask = buffer.readu8(self.graphics, 8)
 	local rotate = buffer.readu8(self.graphics, 3)
 	self.rotate = band(rotate, 7)
 	self.operation = extract(rotate, 3, 2)
 	self.setReset = planeMasks[band(buffer.readu8(self.graphics, 0), 15)]
 	self.enableSetReset = planeMasks[band(buffer.readu8(self.graphics, 1), 15)]
-	self.directWrite = self.writeMode == 0
-		and self.bitMask == 255
-		and band(rotate, 31) == 0
-		and self.enableSetReset == 0
+	updateDirectWrite(self)
 	if self.active ~= wasActive or self.indexed ~= wasIndexed then
 		self.fullRedraw = true
 		self.paletteDirty = true
@@ -170,7 +180,7 @@ function Vga:readMemory(offset)
 			255
 		)
 	end
-	local plane = if self.chain4 then band(offset, 3) else band(buffer.readu8(self.graphics, 4), 3)
+	local plane = if self.chain4 then band(offset, 3) else self.readMap
 	return extract(latches, plane * 8, 8)
 end
 
@@ -230,12 +240,16 @@ function Vga:writeMemory(offset, value)
 		elseif self.operation == 3 then
 			result = bxor(result, latches)
 		end
-		local bits = mask * byteFill
-		result = bor(band(result, bits), band(latches, bnot(bits)))
+		if mask ~= 255 then
+			local bits = mask * byteFill
+			result = bor(band(result, bits), band(latches, bnot(bits)))
+		end
 	end
-	local selected = planeMasks[planes]
 	local previous = buffer.readu32(memory, offset)
-	result = bor(band(result, selected), band(previous, bnot(selected)))
+	if planes ~= 15 then
+		local selected = planeMasks[planes]
+		result = bor(band(result, selected), band(previous, bnot(selected)))
+	end
 	if result ~= previous then
 		buffer.writeu32(memory, offset, result)
 		markWrite(self, offset)
@@ -310,16 +324,38 @@ function Vga:writePort(port, value)
 	elseif port == 0x3C4 then
 		self.sequencerIndex = band(value, 0x07)
 	elseif port == 0x3C5 then
-		if self.sequencerIndex < 5 then
-			buffer.writeu8(self.sequencer, self.sequencerIndex, value)
-			self:updateMode()
+		local index = self.sequencerIndex
+		if index < 5 and buffer.readu8(self.sequencer, index) ~= value then
+			buffer.writeu8(self.sequencer, index, value)
+			if index == 2 then
+				self.planes = band(value, 15)
+				self.singlePlane = singlePlanes[self.planes]
+			elseif index == 4 then
+				self.chain4 = band(value, 8) ~= 0
+			end
 		end
 	elseif port == 0x3CE then
 		self.graphicsIndex = band(value, 0x0F)
 	elseif port == 0x3CF then
-		if self.graphicsIndex < 9 then
-			buffer.writeu8(self.graphics, self.graphicsIndex, value)
-			self:updateMode()
+		local index = self.graphicsIndex
+		if index < 9 and buffer.readu8(self.graphics, index) ~= value then
+			buffer.writeu8(self.graphics, index, value)
+			if index == 8 then
+				self.bitMask = value
+				updateDirectWrite(self)
+			elseif index == 0 then
+				self.setReset = planeMasks[band(value, 15)]
+			elseif index == 1 then
+				self.enableSetReset = planeMasks[band(value, 15)]
+				updateDirectWrite(self)
+			elseif index == 3 then
+				self.rotate, self.operation = band(value, 7), extract(value, 3, 2)
+				updateDirectWrite(self)
+			elseif index == 4 then
+				self.readMap = band(value, 3)
+			elseif index == 5 or index == 6 then
+				self:updateMode()
+			end
 		end
 	elseif port == 0x3C6 then
 		if self.pixelMask ~= value then
@@ -507,7 +543,30 @@ local function addRow(rectangles, left, y, right)
 	end
 end
 
+function Vga:shouldDelayPresent(elapsed, cpuBusy, dragging)
+	if self.indexed or self.fullRedraw or self.delayedPresent or not self.dirty or not cpuBusy or dragging then
+		return false
+	end
+	if elapsed > MAX_REPAINT_FRAME_SECONDS then
+		return false
+	end
+	-- A busy planar guest can erase its software cursor before painting a
+	-- window. Hold large updates for one frame so the next slice can finish it.
+	local groups = 0
+	for offset = 0, DIRTY_BLOCKS - 4, 4 do
+		if buffer.readu32(self.dirtyBlocks, offset) ~= 0 then
+			groups += 1
+			if groups >= REPAINT_BLOCK_GROUPS then
+				self.delayedPresent = true
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function Vga:render()
+	self.delayedPresent = false
 	if not self.active or not self.dirty then
 		return nil
 	end

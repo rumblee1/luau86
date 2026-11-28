@@ -1043,6 +1043,10 @@ function Cpu:finishFault(result, ip, code)
 	if type(result) ~= "table" or result.vector == nil then
 		error(result, 0)
 	end
+	local trace = self.opcodeTrace
+	if trace then
+		trace.faultVector, trace.faultCS, trace.faultIP = result.vector, code.selector, ip
+	end
 	self.ip, self.s[CS] = ip, code
 	self.codeMask = code.big and UINT32 or UINT16
 	local delivered, reason = pcall(self.interrupt, self, result.vector, false, result.code)

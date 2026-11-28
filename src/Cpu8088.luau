@@ -35,6 +35,7 @@ function Cpu.new(bus)
 		flags = 0xF002,
 		halted = false,
 		interruptShadow = false,
+		opcodeTrace = false,
 		codeMask = 0xFFFF,
 		addressMask = 0xFFFF,
 	}, Cpu)
@@ -472,6 +473,12 @@ local ADDITIONAL_386 = {
 	[0xC9] = true,
 }
 
+local function recordOpcode(cpu, trace, startIp, opcode, prefixCount)
+	trace.opcode, trace.ip, trace.cs, trace.prefixCount = opcode, startIp, cpu:selector(CS), prefixCount
+	trace.counts[opcode] = (trace.counts[opcode] or 0) + 1
+	trace.decoded += 1
+end
+
 function Cpu:step(repeatLimit)
 	if self.halted then
 		return
@@ -479,6 +486,7 @@ function Cpu:step(repeatLimit)
 
 	self.interruptShadow = false
 	local startIp = self.ip
+	local trace = self.opcodeTrace
 	local opcode = self:fetch8()
 	local override, repeatPrefix, operandOverride, addressOverride
 	local prefixCount = 0
@@ -496,14 +504,20 @@ function Cpu:step(repeatLimit)
 		elseif prefix == "address" then
 			addressOverride = true
 		end
-		opcode = self:fetch8()
 		prefixCount += 1
+		if trace then
+			trace.prefixes[prefixCount] = opcode
+		end
+		opcode = self:fetch8()
 		if self.ip == startIp or (self.is386 and prefixCount >= 15) then
 			error("Instruction contains too many prefixes", 0)
 		end
 		prefix = PREFIX[opcode]
 	end
 
+	if trace and (opcode ~= 0x0F or not self.is386) then
+		recordOpcode(self, trace, startIp, opcode, prefixCount)
+	end
 	local code32 = self.codeMask == 0xFFFFFFFF
 	local operandSize = code32 ~= (operandOverride == true) and 32 or true
 	local addressSize = code32 ~= (addressOverride == true) and 32 or true
@@ -534,7 +548,11 @@ function Cpu:step(repeatLimit)
 			self:writeOperand(operand, segment, wide, result)
 		end
 	elseif opcode == 0x0F and self.is386 then
-		self:extendedOpcode(self:fetch8(), operandSize, override)
+		local extended = self:fetch8()
+		if trace then
+			recordOpcode(self, trace, startIp, extended + 256, prefixCount)
+		end
+		self:extendedOpcode(extended, operandSize, override)
 	elseif opcode < 0x40 and form <= 5 then
 		local operation = bit32.rshift(opcode, 3)
 		if form >= 4 then

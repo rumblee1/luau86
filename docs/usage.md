@@ -126,11 +126,9 @@ In a Studio Play session, run `BEEP` from the **FreeDOS** prompt for a short ton
 
 Bad Apple and Doom's digital sounds require `AudioStreamWriter`. Roblox restricts it to Studio outside Team Create, and its availability depends on the Studio build and feature rollout. [Roblox audio output reference](https://create.roblox.com/docs/reference/engine/classes/AudioStreamWriter) · [Roblox engine team rollout notes](https://devforum.roblox.com/t/release-notes-for-747/4985911?page=3)
 
-### Measuring performance in Studio
+### Performance stats
 
-In the Client explorer, select `PlayerGui.Luau86.Performance` while running the same workload for each comparison. `GuestClockPercent` tracks the emulated clock rate, and `PresentedVgaFps` counts updated VGA frames. `DiskLoadMs` measures loading the media and creating the machine before the first CPU slice. `CpuP95Ms`, `AudioP95Ms`, `VgaConvertP95Ms`, and `VgaUploadP95Ms` report how much time each stage takes over a two-second window.
-
-For Windows 3.1 Standard, use `WIN /S`. When opening a slow dialog or program, check `IdeSectorsRead` for disk activity, `CpuLimitedFramePercent` for frames that used their CPU budget with guest work left, and `VgaP95Ms` for time spent presenting graphics. `MousePacketP95Ms` measures host movement to the guest reading the complete serial report. `MouseToUploadP95Ms` measures host movement to the next VGA upload after that read. Test audio by playing `C:\WINDOWS\CHIMES.WAV` while dragging a window. For Doom, use the same resolution and sound settings each run and compare the same section of a level. Check whether `AudioUnderruns` or `AudioWriterUnderruns` increases when you hear a gap.
+Hold **Right Alt** to show the stats at the top of the guest display. CPU time is shown next to its frame budget. **Guest** gives the emulated clock rate as a percentage of real time, and **Limited** shows how often the guest ran out of CPU time. The labels also show VGA conversion and upload times, audio processing time, IDE reads, and mouse-to-display latency after mouse movement.
 
 ## Hardware and boot profiles
 

@@ -63,7 +63,7 @@ function Machine:restart()
 	)
 end
 
-local function step(self, haltLimit, execute)
+local function step(self, haltLimit, execute, beforeInstruction, single)
 	local cpu, board = self.cpu, self.board
 	-- With neither PIC holding a request there is no interrupt to deliver.
 	local slave = board.slavePic
@@ -76,12 +76,20 @@ local function step(self, haltLimit, execute)
 	if cpu.halted and haltLimit then
 		local clocks = if cpu:canInterrupt() then math.min(haltLimit, board:clocksUntilIrq(true)) else haltLimit
 		board:advance(clocks)
-		return
+		return nil, if single then "idle" else nil
+	end
+	-- Stop after IRQ delivery, but before fetching the next instruction.
+	if beforeInstruction and beforeInstruction(cpu) then
+		return nil, "breakpoint"
 	end
 	local flags = bit32.band(cpu.flags, 0x300)
 	-- The 386 RAM fast path can also batch with interrupts enabled,
 	-- stopping at the next device event.
 	local repeatLimit = if flags == 0 or (flags == 0x200 and self.bus.at and not cpu.interruptShadow) then 64 else 1
+	-- Limit REP and other fast-path batches when debugging.
+	if single or beforeInstruction then
+		repeatLimit = 1
+	end
 	local iterations = execute(cpu, repeatLimit) or 1
 	local bus = self.bus
 	local pc = bus.pc
@@ -98,36 +106,44 @@ local function step(self, haltLimit, execute)
 	-- The PIT is driven by approximate guest time. HLT leaves the timers running.
 	local ticks = self.bus.at and 1 or 3
 	board:advance(cpu.halted and 32 or ticks * iterations)
+	return nil, if single then "instruction" else nil
 end
 
 function Machine:step(haltLimit)
 	return step(self, haltLimit, self.cpu.step)
 end
 
-local function runSlice(self, target, deadline, execute)
+-- A debug step uses the regular IRQ/reset/boot/timing path. A halted
+-- CPU advances at most 32 PIT ticks (or to the next interrupt event).
+function Machine:debugStep()
+	return step(self, 32, self.cpu.step, nil, true)
+end
+
+local function runSlice(self, target, deadline, execute, beforeInstruction)
 	local pit = self.board.pit
 	while pit.now < target and os.clock() < deadline do
 		for _ = 1, 64 do
 			if pit.now >= target then
 				break
 			end
-			if step(self, target - pit.now, execute) then
-				return true
+			local reset, reason = step(self, target - pit.now, execute, beforeInstruction)
+			if reset or reason then
+				return reset, reason
 			end
 		end
 	end
 end
 
-function Machine:runSlice(target, deadline)
+function Machine:runSlice(target, deadline, beforeInstruction)
 	local cpu, board = self.cpu, self.board
 	if not self.bus.at then
-		return runSlice(self, target, deadline, cpu.step)
+		return runSlice(self, target, deadline, cpu.step, beforeInstruction)
 	end
 
 	while true do
-		local ok, result = pcall(runSlice, self, target, deadline, cpu.stepInSlice)
+		local ok, result, reason = pcall(runSlice, self, target, deadline, cpu.stepInSlice, beforeInstruction)
 		if ok then
-			return result
+			return result, reason
 		end
 		local code = cpu.faultCode
 		cpu.faultCode = nil
