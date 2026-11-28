@@ -3,10 +3,10 @@ local readScreen = require("../src/TextScreen")
 local decode = require("../src/MediaDecode")
 local scanCodes = require("../src/Keyboard")
 
-local index = require("../src/media/full_disk/Index")
+local index = require("../src/media/freedos_combined/Index")
 local disk = buffer.create(index.size)
 for _, part in index.parts do
-	decode(require("../src/media/full_disk/" .. part[2]), disk, part[1])
+	decode(require("../src/media/freedos_combined/" .. part[2]), disk, part[1])
 end
 
 local machine = Machine.new(
@@ -55,6 +55,11 @@ end
 
 runUntil(atPrompt, 9000)
 print("FreeDOS mounted the full installation as C:")
+typeCommand("vga")
+runUntil(function(text)
+	return text:find("VGA Library", 1, true) ~= nil and atPrompt(text)
+end, 3000)
+print("The combined image includes the VGA library and apps")
 typeCommand("dir fdos\\bin\\mem.exe /b")
 runUntil(function(text)
 	return text:lower():find("mem.exe", 1, true) ~= nil and atPrompt(text)

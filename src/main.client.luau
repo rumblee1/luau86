@@ -106,9 +106,13 @@ local function addProfile(name, diskName, bootFloppy)
 	end
 end
 
-addProfile("FreeDOS", "vga_hard_disk", floppy)
-if media:FindFirstChild("full_disk") then
-	addProfile("FreeDOS Full", "full_disk", floppy)
+if media:FindFirstChild("freedos_combined") then
+	addProfile("FreeDOS", "freedos_combined", floppy)
+else
+	addProfile("FreeDOS", "vga_hard_disk", floppy)
+	if media:FindFirstChild("full_disk") then
+		addProfile("FreeDOS Full", "full_disk", floppy)
+	end
 end
 addProfile("Linux", "linux_disk")
 if media:FindFirstChild("vga_windows31_disk") then
@@ -148,6 +152,7 @@ text.Text = "Ready to boot " .. profiles[1].name
 local selector, profileMenu, profileArrow, profileDismiss
 local profileOptions = {}
 local PROFILE_ROW = 28
+local PROFILE_MENU_MAX_ROWS = 3
 if #profiles > 1 then
 	selector = power:Clone()
 	selector.Name = "MachineProfile"
@@ -214,10 +219,13 @@ if #profiles > 1 then
 	profileMenu.BorderSizePixel = 0
 	profileMenu.ScrollBarThickness = 4
 	profileMenu.ScrollBarImageColor3 = power.TextColor3:Lerp(power.BackgroundColor3, 0.3)
+	profileMenu.ScrollBarImageTransparency = 1
+	profileMenu.ElasticBehavior = Enum.ElasticBehavior.Never
 	profileMenu.ScrollingDirection = Enum.ScrollingDirection.Y
 	profileMenu.VerticalScrollBarInset = Enum.ScrollBarInset.Always
 	profileMenu.CanvasSize = UDim2.fromOffset(0, #profiles * PROFILE_ROW)
 	profileMenu.Active = true
+	profileMenu.ScrollingEnabled = true
 	profileMenu.Visible = false
 	profileMenu.ZIndex = 11
 	profileMenu.ClipsDescendants = true
@@ -293,13 +301,17 @@ local function positionProfileMenu()
 	local x, bottom = selector.Position.X.Offset, selector.Position.Y.Offset
 	local top = bottom - selector.Size.Y.Offset
 	profileArrow.Position = UDim2.fromOffset(x + selector.Size.X.Offset - 12, (top + bottom) / 2)
-	local above, below = math.max(0, top - 4), math.max(0, panel.AbsoluteSize.Y - bottom - 4)
-	local desired = math.min(#profiles * PROFILE_ROW, 224)
-	local openAbove = above >= desired or above >= below
-	local height = math.min(desired, if openAbove then above else below)
+	local panelHeight = panel.AbsoluteSize.Y
+	local contentHeight = #profileOptions * PROFILE_ROW
+	local height = math.min(PROFILE_MENU_MAX_ROWS * PROFILE_ROW, contentHeight, panelHeight - 8)
 	if height < 1 then closeProfileMenu(); return end
-	profileMenu.Position = UDim2.fromOffset(x, if openAbove then top - height - 4 else bottom + 4)
+	local above, below = top - 4, panelHeight - bottom - 4
+	local openAbove = above >= below
+	local y = if openAbove then top - height - 4 else bottom + 4
+	y = math.clamp(y, 4, panelHeight - height - 4)
+	profileMenu.Position = UDim2.fromOffset(x, y)
 	profileMenu.Size = UDim2.fromOffset(selector.Size.X.Offset, height)
+	profileMenu.CanvasPosition = Vector2.new(0, math.clamp(profileMenu.CanvasPosition.Y, 0, math.max(0, contentHeight - height)))
 end
 
 local GAP = 8
@@ -308,17 +320,28 @@ local CONTROL_HEIGHT = 44
 local BUTTON_HEIGHT = 36
 
 local function placeControls(centerX, bottomY, availableWidth)
-	local buttons = if selector then { selector, power, details, debugButton } else { power, details, debugButton }
-	local widths = if selector then { 148, 110, 82, 72 } else { 110, 82, 72 }
+	local buttons = {}
+	for _, entry in {
+		{ selector, 148 },
+		{ power, 110 },
+		{ details, 82 },
+		{ debugButton, 72 },
+	} do
+		if entry[1] and entry[1].Visible then
+			table.insert(buttons, entry)
+		end
+	end
+	if #buttons == 0 then return end
+
 	local total = GAP * (#buttons - 1)
-	for _, width in widths do
-		total += width
+	for _, entry in buttons do
+		total += entry[2]
 	end
 	local scale = math.min(1, math.max(0, availableWidth - GAP * (#buttons - 1)) / (total - GAP * (#buttons - 1)))
 	total = (total - GAP * (#buttons - 1)) * scale + GAP * (#buttons - 1)
 	local x = centerX - total / 2
-	for index, item in buttons do
-		local width = widths[index] * scale
+	for _, entry in buttons do
+		local item, width = entry[1], entry[2] * scale
 		item.AnchorPoint = Vector2.new(0, 1)
 		item.Position = UDim2.fromOffset(x, bottomY)
 		item.Size = UDim2.fromOffset(width, BUTTON_HEIGHT)
@@ -372,9 +395,22 @@ local function updateLayout()
 	debugButton.BackgroundColor3 = if debugger.group.Visible then power.BackgroundColor3:Lerp(power.TextColor3, 0.15) else power.BackgroundColor3
 end
 
+local rightAltHeld = false
+local function updateActionButtonVisibility()
+	local visible = rightAltHeld or stats.group.Visible or debugger.group.Visible
+	details.Visible = visible
+	debugButton.Visible = visible
+end
+local function updatePanelLayout()
+	updateActionButtonVisibility()
+	updateLayout()
+end
+
 local sizeConnection = panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateLayout)
-local statsVisibilityConnection = stats.group:GetPropertyChangedSignal("Visible"):Connect(updateLayout)
-local debugVisibilityConnection = debugger.group:GetPropertyChangedSignal("Visible"):Connect(updateLayout)
+local statsVisibilityConnection = stats.group:GetPropertyChangedSignal("Visible"):Connect(updatePanelLayout)
+local debugVisibilityConnection = debugger.group:GetPropertyChangedSignal("Visible"):Connect(updatePanelLayout)
+local detailsVisibilityConnection = details:GetPropertyChangedSignal("Visible"):Connect(updateLayout)
+local debugButtonVisibilityConnection = debugButton:GetPropertyChangedSignal("Visible"):Connect(updateLayout)
 updateLayout()
 
 local machine, failed, loading
@@ -461,6 +497,7 @@ if selector then
 		profileMenu.Visible = true
 		profileDismiss.Visible = true
 		profileArrow.Rotation = 180
+		profileMenu.CanvasPosition = Vector2.zero
 		positionProfileMenu()
 	end)
 	for index, option in profileOptions do
@@ -543,9 +580,8 @@ local cameraConnection = workspace:GetPropertyChangedSignal("CurrentCamera"):Con
 end)
 
 local ACTION = "Luau86Keyboard"
-local STATS_KEY = Enum.KeyCode.RightAlt
+local STATS_KEY = Enum.KeyCode.F6
 local statsKeyDown = false
-local rightAltHeld = false
 local keys = {}
 for _, key in Enum.KeyCode:GetEnumItems() do
 	if scanCodes[key.Name] then
@@ -660,8 +696,7 @@ local keyDown = UserInputService.InputBegan:Connect(function(input)
 	end
 	if input.KeyCode == STATS_KEY then
 		rightAltHeld = true
-		details.Visible = true
-		debugButton.Visible = true
+		updateActionButtonVisibility()
 		return
 	end
 	local button = mouseButton[input.UserInputType]
@@ -687,8 +722,7 @@ end)
 local keyUp = UserInputService.InputEnded:Connect(function(input)
 	if input.KeyCode == STATS_KEY then
 		rightAltHeld = false
-		details.Visible = false
-		debugButton.Visible = false
+		updateActionButtonVisibility()
 	elseif input.UserInputType == Enum.UserInputType.Keyboard then
 		releaseKey(input.KeyCode)
 	else
@@ -702,6 +736,7 @@ end)
 
 releaseAllInputs = function()
 	rightAltHeld = false
+	updateActionButtonVisibility()
 	for key in held do
 		releaseKey(key)
 	end
@@ -890,6 +925,8 @@ gui.Destroying:Connect(function()
 	sizeConnection:Disconnect()
 	statsVisibilityConnection:Disconnect()
 	debugVisibilityConnection:Disconnect()
+	detailsVisibilityConnection:Disconnect()
+	debugButtonVisibilityConnection:Disconnect()
 	debugger:detach()
 	renderStatsConnection:Disconnect()
 	stats:detachDisks()
