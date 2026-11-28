@@ -55,6 +55,27 @@ python3 tools/media.py import-disk ./images/dos.img --name "DOS with a data disk
 
 `ide1:1:/EXTRAS` means the second IDE disk, partition 1, folder `EXTRAS`. You can use `C:/EXTRAS` for the first disk or `D:/EXTRAS` for the second when each attached IDE disk has one primary FAT partition. Use an explicit slot and partition number for other layouts. DOS assigns the drive letters you see after boot.
 
+## Manage files in existing images
+
+These commands use `mtools` and the same FAT paths as `--copy-to`. `list` defaults to the image's root volume; `extract` writes into a new host directory.
+
+```sh
+python3 tools/media.py list ./images/dos.img C:/WINDOWS
+python3 tools/media.py extract ./images/dos.img C:/WINDOWS/CONFIG.SYS --output ./extracted
+```
+
+Copy files or directory trees between images without changing either source image. `--recursive` is required for directories; directories keep their names and merge into the destination. The default conflict policy is `error`; `skip` and `overwrite` are also available. Output image and extraction paths must not already exist.
+
+```sh
+python3 tools/media.py copy ./images/vga-apps.img A:/ --to ./images/freedos-full.img C:/ --output ./images/freedos-combined.img --recursive --on-conflict skip
+```
+
+Replace one exact text occurrence in a file, writing the modified disk as a new image. The old text must occur exactly once; `--encoding` defaults to UTF-8.
+
+```sh
+python3 tools/media.py replace-text ./images/dos.img C:/AUTOEXEC.BAT --old "WIN /S" --new "WIN /3" --output ./images/dos-updated.img
+```
+
 ## Boot Windows 3.1
 
 Start with a compatible raw hard disk image that already has DOS and Windows 3.1 installed.

@@ -1,8 +1,10 @@
-"""Copy supplied files onto a temporary raw FAT disk image."""
+"""Copy and extract files from raw FAT disk images."""
 
 import re
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 from .disk import partitions, validate_fat_volume
 
@@ -25,6 +27,7 @@ def resolve_destination(images, destination):
     if not match:
         raise ValueError("--copy-to expects A:/folder, C:/folder, D:/folder, or ide0:1:/folder")
     target, path = match.groups()
+    path = path.rstrip("/")
     components = [dos_name(name) for name in path.split("/")] if path else []
     if target.upper() == "A":
         slot = "floppy0"
@@ -50,27 +53,50 @@ def resolve_destination(images, destination):
     return slot, partition.offset, components
 
 
-def copy_files(disk, offset, source, components):
-    for tool in ("mdir", "mmd", "mcopy"):
-        if shutil.which(tool) is None:
-            raise ValueError("Install mtools to use --copy-from")
-    if source.is_symlink() or not source.is_dir():
-        raise ValueError("--copy-from must be a directory")
-    volume = f"{disk}@@{offset}" if offset else str(disk)
+def resolve_image_path(image, location):
+    match = re.match(r"^(A|C|D|ide[01](?::[1-4])?):/", location, re.IGNORECASE)
+    if not match:
+        raise ValueError("Image paths must start with A:/, C:/, D:/, ide0:1:/, or ide1:1:/")
+    drive = match.group(1).lower().split(":")[0]
+    slot = "floppy0" if drive == "a" else ("ide1" if drive in ("d", "ide1") else "ide0")
+    _, offset, components = resolve_destination({slot: image}, location)
+    return offset, components
 
-    def run(tool, *args, check=True):
-        result = subprocess.run(
-            [tool, "-i", volume, *args],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
-        )
-        if check and result.returncode:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise ValueError(f"{tool} failed for {args[-1]}" + (f": {detail}" if detail else ""))
-        return result.returncode == 0
+
+def guest_path(components):
+    return "::/" + "/".join(components)
+
+
+def run_mtool(tool, disk, offset, *args, check=True):
+    if shutil.which(tool) is None:
+        raise ValueError("Install mtools to use image file operations")
+    volume = f"{disk}@@{offset}" if offset else str(disk)
+    result = subprocess.run(
+        [tool, "-i", volume, *args],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if check and result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        target = args[-1] if args else volume
+        raise ValueError(f"{tool} failed for {target}" + (f": {detail}" if detail else ""))
+    return result
+
+
+def copy_files(disk, offset, source, components, on_conflict="error"):
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("Copy source must be a directory")
+    if on_conflict not in ("error", "skip", "overwrite"):
+        raise ValueError(f"Unknown conflict policy: {on_conflict}")
+
+    def exists(path):
+        return run_mtool("mdir", disk, offset, "-a", "-b", path, check=False).returncode == 0
 
     def ensure_directory(target):
-        if not run("mdir", "-b", f"{target}/", check=False):
-            run("mmd", target)
+        if not exists(f"{target}/"):
+            run_mtool("mmd", disk, offset, target)
 
     def copy_directory(host, guest):
         for item in sorted(host.iterdir()):
@@ -81,15 +107,56 @@ def copy_files(disk, offset, source, components):
                 ensure_directory(target)
                 copy_directory(item, target)
             elif item.is_file():
-                if run("mdir", "-b", target, check=False):
-                    raise ValueError(f"Destination already exists: {target}")
-                run("mcopy", "-D", "s", item.resolve(), target)
+                if exists(target):
+                    if on_conflict == "error":
+                        raise ValueError(f"Destination already exists: {target}")
+                    if on_conflict == "skip":
+                        continue
+                    run_mtool("mcopy", disk, offset, "-o", item.resolve(), target)
+                else:
+                    run_mtool("mcopy", disk, offset, "-D", "s", item.resolve(), target)
             else:
                 raise ValueError(f"Cannot copy {item}: expected a regular file or directory")
 
-    run("mdir", "-b", "::/")
+    run_mtool("mdir", disk, offset, "-b", "::/")
     guest = "::"
     for component in components:
         guest += "/" + component
         ensure_directory(guest)
     copy_directory(source, guest)
+
+
+def extract_files(disk, offset, components, destination):
+    source = "::/*" if not components else guest_path(components)
+    run_mtool("mcopy", disk, offset, "-s", source, str(destination))
+
+
+def copy_image_files(
+    source_disk,
+    source_offset,
+    source_components,
+    destination_disk,
+    destination_offset,
+    destination_components,
+    recursive,
+    on_conflict,
+):
+    source = "::/*" if not source_components else guest_path(source_components)
+    is_directory = not source_components or run_mtool(
+        "mdir",
+        source_disk,
+        source_offset,
+        "-a",
+        "-b",
+        guest_path(source_components).rstrip("/") + "/",
+        check=False,
+    ).returncode == 0
+    if is_directory and not recursive:
+        raise ValueError("Copying a directory requires --recursive")
+
+    with tempfile.TemporaryDirectory(prefix="luau86-copy-") as temporary:
+        extracted = Path(temporary) / "files"
+        extracted.mkdir()
+        options = ("-s",) if recursive else ()
+        run_mtool("mcopy", source_disk, source_offset, *options, source, str(extracted))
+        copy_files(destination_disk, destination_offset, extracted, destination_components, on_conflict)
